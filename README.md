@@ -109,6 +109,11 @@ If data augmentation is needed then set `augment:true` in `configs/training/trai
 ```
 The current augmentation configuration files contains all supported augmentations.
 
+Example for cosine similarity threshold set to 60\%:
+```
+python main.py --config=configs/main_configs/bigearthnet.json --seed=222 --method=configs/method/classification/rvit.json --training_config=configs/training/training_per_dataset/rvit/bigearthnet_training.json --mask_threshold=0.6
+```
+
 #### Webdataset setup
 The example in `configs/configs.json` contains the following options for webdataset:
 ```
