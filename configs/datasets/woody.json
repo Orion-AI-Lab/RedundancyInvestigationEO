@@ -1,0 +1,11 @@
+{
+    "root_path":"/home/mila/n/nikolaos.bountos/scratch/Forests",
+    "task":"segmentation", // Possible Tasks: Depending on the dataset,
+    "metrics": ["accuracy","fscore","iou"], //Desired metrics to log
+    "num_classes":4,
+    "in_channels":3,
+    "tile_size":224,
+    "image_size":224,
+    "tiling":true,
+    "meta_info":""
+}

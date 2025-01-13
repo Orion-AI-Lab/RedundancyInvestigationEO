@@ -1,0 +1,7 @@
+{
+    "root_path":"/home/nbountos/shared_storage/nbountos/datasets/Forests/",
+    "task":"segmentation", // Possible Tasks: Depending on the dataset
+    "area":"all", // Options: shonai_coastal_forest, yurf, all.
+    "metrics": ["accuracy","fscore"], //Desired metrics to log
+    "meta_info":""
+}

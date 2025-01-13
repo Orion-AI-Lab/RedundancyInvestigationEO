@@ -1,0 +1,8 @@
+{
+    "root_path":"/home/mila/n/nikolaos.bountos/scratch/Forests",
+    "task":"mae",
+    "metrics":["accuracy","fscore","recall","precision","iou"],
+    "num_classes":4,
+    "in_channels":5,
+    "meta_information":""
+}

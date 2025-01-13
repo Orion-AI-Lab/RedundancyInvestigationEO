@@ -1,0 +1,5 @@
+{
+    "architecture":"point_transformer",
+    "backbone":"none",
+    "pretrained":false
+}

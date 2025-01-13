@@ -1,0 +1,9 @@
+{
+    "root_path":"/home/mila/n/nikolaos.bountos/scratch/Forests",
+    "task":"segmentation",
+    "metrics":["accuracy","fscore","iou"],
+    "num_classes":19,
+    "in_channels":5,//in FoMo we use RGB-NIR, for for the rest we include DEM too
+    "image_size":224,
+    "meta_information":""
+}

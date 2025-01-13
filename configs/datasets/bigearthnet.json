@@ -1,0 +1,10 @@
+{
+    "root_path":"/home/mila/n/nikolaos.bountos/scratch/Forests",
+    "task":"classification", // Possible Tasks: Depending on the dataset,
+    "metrics": ["accuracy","fscore","map"], //Desired metrics to log
+    "num_classes":5,//19,
+    "in_channels":3,//14,
+    "multilabel":true,
+    "image_size":120,
+    "meta_info":"Data collected in Europe."
+}

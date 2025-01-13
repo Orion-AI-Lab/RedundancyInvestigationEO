@@ -1,0 +1,11 @@
+{
+    "root_path":"/network/scratch/a/arthur.ouaknine/data/fomobench/NeonTree",
+    "task":"point_segmentation", // Possible Tasks: Depending on the dataset,
+    "segmentation_task":"binary_segmentation", // Set to false if segmentation is not required 
+    "num_classes":2,
+    "in_channels":3,
+    "modality":"lidar",
+    // "metrics":["iou","ciou","map"],
+    "metrics":["accuracy","fscore","iou"],
+    "meta_info":""
+}

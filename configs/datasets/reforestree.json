@@ -1,0 +1,13 @@
+{
+    "root_path":"/network/projects/fomobench/Datasets/ReforesTree",
+    "download":false, // Option to download the dataset
+    "checksum": false,  // check the MD5 of the downloaded files 
+    "task":"classification",
+    "det_format":"coco",
+    "segmentation_task":null,  // segmentation not required here
+    "num_classes":6,
+    "in_channels":3,
+    // "metrics": ["accuracy","fscore"], //Desired metrics to log
+    "metrics":["accuracy"],
+    "meta_info":""
+}

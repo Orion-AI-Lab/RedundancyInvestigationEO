@@ -1,0 +1,7 @@
+{
+    "backbone":"vit_large_patch16_224.augreg_in21k",
+    "mask_threshold":0.7,
+    "rvit":true,
+    "mask_in_token_space":false,
+    "pretrained":true
+}

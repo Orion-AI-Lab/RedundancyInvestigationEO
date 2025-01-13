@@ -1,0 +1,9 @@
+{
+    "root_path":"/home/mila/n/nikolaos.bountos/scratch/Forests",
+    "task":"segmentation",
+    "metrics":["accuracy","fscore","recall","precision","iou"],
+    "sentinel_size":40,
+    "num_classes":19,
+    "in_channels":5,
+    "meta_information":""
+}

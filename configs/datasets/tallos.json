@@ -1,0 +1,13 @@
+{
+    "root_path":"/home/mila/n/nikolaos.bountos/scratch/TalloSFinal",
+    "dem_path":"/home/mila/n/nikolaos.bountos/scratch/tmpTalloSS2/TalloS",
+    "task":"classification", // Possible Tasks: Depending on the dataset,
+    "metrics": ["accuracy","fscore"], //Desired metrics to log
+    "num_classes":1364,
+    "input_mode":"single_image",
+    "split_path":"/home/mila/n/nikolaos.bountos/Projects/Forest-Monitoring-Benchmark/configs/datasets/tallos_split.json",
+    "class_level":"genus",
+    "multilabel":true,
+    "in_channels":13, // Could include options to select season or ROI.
+    "meta_info":"Global coverage."
+}

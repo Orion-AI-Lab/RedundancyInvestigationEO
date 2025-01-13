@@ -1,0 +1,21 @@
+{
+    "dataset":"all_without_s1s2", // Options: All available datasets
+    "wandb":false,
+    "wandb_project":"SpectralMAEv2",
+    "wandb_entity":"forest-benchmark",
+    "phase":"train",
+    "wandb_id_resume":null,
+    "eval_checkpoint":null,
+    "device":"cpu",
+    "mixed_precision":false,
+    "seed":999,
+    "webdataset":true,
+    "webdataset_parallel":true,
+    "webdataset_write_processes":4,
+    "webdataset_shuffle_size": 128,// 1000,
+    "webdataset_initial_buffer":128,// 1000,
+    "max_samples_per_shard": 256, //set upper limit 256 samples per shard
+    "max_sample_resolution":null, // Store samples to shards with fixed resolution e.g Height x Width : 64x64. ONLY FOR PRETRAINING! The labels are deliberately not adapted and the resulting webdataset can only be used when the path is provided in the next option. For finetuning the resolution can be adapted at the augmentations.json
+    "webdataset_root_path":"/home/mila/n/nikolaos.bountos/scratch",//"/home/mila/n/nikolaos.bountos/scratch",//"/home/mila/n/nikolaos.bountos/scratch/Forests/webdataset_64",// 
+    "checkpoint_root_path":null,//"$SCRATCH/FoMo-Bench/checkpoints", //root directory for the checkpoint paths. If null checkpoints will be stored at the project's root directory. 
+}

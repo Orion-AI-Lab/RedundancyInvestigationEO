@@ -1,0 +1,13 @@
+{
+    "root_path":"/home/mila/n/nikolaos.bountos/scratch/Forests",
+    "task":"segmentation",
+    "metrics":["accuracy","fscore","recall","precision","iou"],
+    "sentinel_size":40,
+    "num_classes":19,
+    "in_channels":15,
+    "image_size":128,//only for FoMo finetuning
+    "data_source":["aerial","sentinel2"],
+    "timeseries":false, // Option to include timeseries from Sentinel-2 for each sample
+    "length_of_sequence":5, // Number of Sentinel captions to use in the timeseries
+    "meta_information":""
+}

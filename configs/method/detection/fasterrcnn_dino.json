@@ -1,0 +1,5 @@
+{
+    "architecture":"fasterrcnn",
+    "backbone":"dinov2",
+    "pretrained":true
+}

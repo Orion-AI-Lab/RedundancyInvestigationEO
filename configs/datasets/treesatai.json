@@ -1,0 +1,11 @@
+{
+    "root_path":"/network/projects/fomobench/Datasets/",
+    "data_source":["s1_200m"],//["s2_200m"], // Options: aerial, s1_60, s1_200, s2_60m, s2_200 
+    "task":"classification",
+    "num_classes":15,
+    "in_channels":12,
+    "filter_threshold":0.07,//0.007, // Assign label if covered area > threshold. If null no threshold is applied in labels 
+    "multilabel":true,
+    "metrics": ["accuracy","fscore","map"], //Desired metrics to log
+    "meta_info":""
+}

@@ -1,0 +1,11 @@
+{
+    "backbone":"",
+    "model":"mae_vit_base_patch16_dec512d8b",
+    "input_size":224,
+    "mask_ratio":0.75,
+    "norm_pix_loss":false,
+    "seed":0,
+    "resume":false,
+    "start_epoch":0,
+    "pin_mem":true
+}
