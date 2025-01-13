@@ -10,6 +10,7 @@ This repository contains code for the investigation of redundancy on various dat
     - [Adding new models](#adding-new-models)
     - [Adding new tasks](#adding-new-tasks)
     - [Training Foundation Models](#train-foundation-models)
+    - [Investigate Redundancy](#investigate-redundancy)
 - [Add new augmentation methods](#adding-data-augmentations)
 - [Add new datasets](#adding-new-datasets)
 - [Webdataset setup](#webdataset-setup)
@@ -109,11 +110,6 @@ If data augmentation is needed then set `augment:true` in `configs/training/trai
 ```
 The current augmentation configuration files contains all supported augmentations.
 
-Example for cosine similarity threshold set to 60\%:
-```
-python main.py --config=configs/main_configs/bigearthnet.json --seed=222 --method=configs/method/classification/rvit.json --training_config=configs/training/training_per_dataset/rvit/bigearthnet_training.json --mask_threshold=0.6
-```
-
 #### Webdataset setup
 The example in `configs/configs.json` contains the following options for webdataset:
 ```
@@ -195,6 +191,15 @@ We currently support the training of multimodal [Masked Autoencoders (MAE)](http
             "p": 1.0
         },
 ```
+
+
+#### Investigate Redundancy
+
+Example for cosine similarity threshold set to 60\%:
+```
+python main.py --config=configs/main_configs/bigearthnet.json --seed=222 --method=configs/method/classification/rvit.json --training_config=configs/training/training_per_dataset/rvit/bigearthnet_training.json --mask_threshold=0.6
+```
+
 ### Adding data augmentations
 The data augmentation pipeline is based on the [Albumentations](https://albumentations.ai/docs/) library. To add an augmentation method one should include it in the `get_augmentations` function of `utilities/augmentations.py`. For example to add the `VerticalFlip` augmentation we add:
 
