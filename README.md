@@ -19,7 +19,11 @@ This repository contains code for the investigation of redundancy on various dat
 
 ### Setup project
 
-`conda env create --name envname --file=redundancy.yml`
+```
+conda env create --name envname --python=3.10
+
+pip install -r requirements.txt
+```
 
 ### Repository Structure
 ```css
