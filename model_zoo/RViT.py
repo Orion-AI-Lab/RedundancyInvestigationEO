@@ -163,7 +163,7 @@ class RViT(nn.Module):
 
         # Sum patches across the whole batch
         masked_patches_in_batch = masked_patches_per_sample.sum()
-        unmasked_patches_in_batch = unmasked_patches_in_batch.sum()
+        unmasked_patches_in_batch = unmasked_patches_per_sample.sum() #chech if it is pushed
 
         # Compute masked ratio
         masked_ratio = masked_patches_in_batch / (x.shape[0] * (x.shape[1] - 1))  # Normalize by batch size
