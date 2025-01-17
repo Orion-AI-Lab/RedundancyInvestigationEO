@@ -136,25 +136,48 @@ class RViT(nn.Module):
         retained_tokens = [x[i, keep_mask[i]] for i in range(x.shape[0])]
                 
         #Get median length
-        median_len = torch.median(torch.tensor([tokens.shape[0] for tokens in retained_tokens]))
+        #median_len = torch.median(torch.tensor([tokens.shape[0] for tokens in retained_tokens]))
         
+        # Get max length (instead of median)
+        max_len = max(tokens.shape[0] for tokens in retained_tokens)
+
         #Calc topk indices
-        topk_indices = self.get_topk_indices(cos_sim,median_len)
+        topk_indices = self.get_topk_indices(cos_sim,max_len)
         if self.model.global_pool=='token':
             #Increment indices by 1 to account for the CLS token
             topk_indices += 1
         
         batch_indices = torch.arange(x.shape[0], device=x.device)[:, None]
         x = x[batch_indices,topk_indices]
-        
+
+        # Pad to max_len with zeros (or another suitable value)
+        pad_value = 0  # Change if necessary
+        padded_x = torch.full((x.shape[0], max_len, x.shape[2]), pad_value, device=x.device)
+        for i in range(x.shape[0]):
+            padded_x[i, :x[i].shape[0]] = x[i]
+
+        #masked_ratio_calculation
+        # Count how many patches are masked per sample (excluding CLS token)
+        masked_patches_per_sample = (~keep_mask[:, 1:]).sum(dim=1)
+        unmasked_patches_per_sample = (keep_mask[:, 1:]).sum(dim=1)
+
+        # Sum patches across the whole batch
+        masked_patches_in_batch = masked_patches_per_sample.sum()
+        unmasked_patches_in_batch = unmasked_patches_in_batch.sum()
+
+        # Compute masked ratio
+        masked_ratio = masked_patches_in_batch / (x.shape[0] * (x.shape[1] - 1))  # Normalize by batch size
+        unmasked_ratio = unmasked_patches_in_batch / (x.shape[0] * (x.shape[1] - 1))
+
         if verbose:
-            print("X shape: ",x.shape)
-            print("Keep mask shape: ",keep_mask.shape)
-            print("Masked: ", keep_mask.sum())
-            print("Masked ratio: ",median_len/total_patches)
+            print("X shape: ", padded_x.shape)
+            print("Keep mask shape: ", keep_mask.shape)
+            print("Masked in batch: ", masked_patches_in_batch)
+            print("Masked ratio: ", masked_ratio)
+            #print(padded_x.shape)
             print(x.shape)
         if wandb.run:
-            wandb.log({"unmasked_patches_ratio":median_len/total_patches})
+            wandb.log({"unmasked_patches_ratio":unmasked_ratio})
         return x
 
 
