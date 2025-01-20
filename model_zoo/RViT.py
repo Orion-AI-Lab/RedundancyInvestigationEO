@@ -67,6 +67,7 @@ class RViT(nn.Module):
         norms_torch = torch.norm(x, dim=2, keepdim=True)
         normalized_tensor_torch = x / norms_torch
         cos_sim = torch.bmm(normalized_tensor_torch, normalized_tensor_torch.transpose(1,2))
+        print("checkpoint0:",cos_sim[1,1,:])
         return cos_sim
     
     def get_mask(self, cos_sim):
@@ -105,16 +106,18 @@ class RViT(nn.Module):
         # Initialize the keep mask (batch, num_tokens+1) with True (keep all tokens initially)
         batch_size, num_tokens, _ = cos_sim.shape
         keep_mask = torch.ones((batch_size, num_tokens + 1), dtype=torch.bool, device=cos_sim.device)
+        counter = keep_mask.sum(dim=1).tolist()
+        print("Keep_mask:", counter)
         
         # Create a mask for cosine similarity above the threshold
         sim_mask = cos_sim > self.mask_threshold  # (batch, num_tokens, num_tokens)
-        
+
         # Create an upper triangular mask to ignore duplicate pairs and self-pairs (i, i)
         triu_mask = torch.triu(torch.ones_like(sim_mask), diagonal=1).bool()  # (batch, num_tokens, num_tokens)
-        
+       # print(triu_mask[1,1])
         # Combine the two masks (only consider the upper triangle and cosine similarities above the threshold)
         combined_mask = sim_mask & triu_mask  # (batch, num_tokens, num_tokens)
-        
+        #print(combined_mask)
         # Find which tokens should be marked False (don't keep). We mark the second token (j)
         # Reduce over the third axis (num_tokens) to see if any token j should be masked
         mark_false = combined_mask.any(dim=1)  # (batch, num_tokens)
@@ -131,16 +134,21 @@ class RViT(nn.Module):
         cos_sim = self.batch_cos_similarity(out)
         
         keep_mask = self.get_mask_vectorised(cos_sim)
-        
+        print("Checkpoint1", keep_mask[1,:].tolist())
         #Keep mask per row sum
         retained_tokens = [x[i, keep_mask[i]] for i in range(x.shape[0])]
-                
+
         #Get median length
         #median_len = torch.median(torch.tensor([tokens.shape[0] for tokens in retained_tokens]))
+
+        # Count the number of tokens retained for each sample
+        retained_counts = keep_mask.sum(dim=1).tolist()
+        print("Retained tokens per sample:", retained_counts)
+
         
         # Get max length (instead of median)
         max_len = max(tokens.shape[0] for tokens in retained_tokens)
-
+        max_len = min(max_len, total_patches)
         #Calc topk indices
         topk_indices = self.get_topk_indices(cos_sim,max_len)
         if self.model.global_pool=='token':
@@ -151,10 +159,11 @@ class RViT(nn.Module):
         x = x[batch_indices,topk_indices]
 
         # Pad to max_len with zeros (or another suitable value)
-        pad_value = 0  # Change if necessary
+        pad_value = -1  # Change if necessary
         padded_x = torch.full((x.shape[0], max_len, x.shape[2]), pad_value, device=x.device)
+
         for i in range(x.shape[0]):
-            padded_x[i, :x[i].shape[0]] = x[i]
+            padded_x[i, :x[i].shape[0]] = x[i]  
 
         #masked_ratio_calculation
         # Count how many patches are masked per sample (excluding CLS token)
@@ -209,6 +218,7 @@ class RViT(nn.Module):
         masked_similarities = cos_sim * mask.unsqueeze(0)
         mean_similarities = masked_similarities.sum(dim=2) / (cos_sim.shape[1] - 1)
         tok_k_indices = torch.topk(-mean_similarities, k, dim=1).indices
+        print(tok_k_indices[12, 5])
         return tok_k_indices
     
     def forward_mask_in_image_space(self, x,verbose=False):
@@ -222,10 +232,11 @@ class RViT(nn.Module):
             pad_w = (patch_size - W % patch_size) % patch_size
             tmp_x = F.pad(x, (0, pad_w, 0, pad_h))
             patches = einops.rearrange(tmp_x,"b c (h p1) (w p2) -> b (h w) (p1 p2 c)", p1=patch_size, p2=patch_size)
-
+            
             cos_sim = self.batch_cos_similarity(patches)
             #keep_mask = self.get_mask(cos_sim)
             keep_mask = self.get_mask_vectorised(cos_sim)
+            print(keep_mask)
 
         #Get actual tokens
         x = self.model.patch_embed(x)
@@ -236,13 +247,18 @@ class RViT(nn.Module):
         #Mask per batch
         if self.training and self.mask_threshold<1.0:        
             #Mask based on similarity
+            print(keep_mask)
             retained_tokens = [x[i, keep_mask[i]] for i in range(x.shape[0])]
-            
             #Get median length
-            median_len = torch.median(torch.tensor([tokens.shape[0] for tokens in retained_tokens]))
-            
+            #median_len = torch.median(torch.tensor([tokens.shape[0] for tokens in retained_tokens]))
+            print([tokens.shape[0] for tokens in retained_tokens])
+            max_len = max(tokens.shape[0] for tokens in retained_tokens)
+            max_len = min(max_len, total_patches)
+            #max_len = torch.max(torch.tensor([tokens.shape[0] for tokens in retained_tokens]))
+            print("Max_len:", max_len)
             #Calc topk indices
-            topk_indices = self.get_topk_indices(cos_sim,median_len)
+           # topk_indices = self.get_topk_indices(cos_sim,median_len)
+            topk_indices = self.get_topk_indices(cos_sim,max_len)
             if self.model.global_pool=='token':
                 #Increment indices by 1 to account for the CLS token
                 topk_indices += 1
@@ -253,11 +269,11 @@ class RViT(nn.Module):
                 print("Cos sim shape: ",cos_sim.shape)
                 print("Indices shape: ",topk_indices.shape)
                 print("Unmasked shape: ",x.shape)
-                print("Median masked shape: ",x[batch_indices,topk_indices].shape)            
-                print("Median len: ",median_len)            
+                print("Max masked shape: ",x[batch_indices,topk_indices].shape)            
+                print("Max len: ",max_len)            
         
             if wandb.run:
-                wandb.log({"unmasked_patches_ratio":median_len/total_patches})
+                wandb.log({"unmasked_patches_ratio":max_len/total_patches})
             
         x = self.model.norm_pre(x)
         x = self.model.blocks(x)
@@ -279,7 +295,6 @@ if __name__ == '__main__':
     
     x = torch.cat((x,x),dim=2)
     print(x.shape)
-    
     x = torch.cat((x,x),dim=3)
     print(x.shape)
     model.train()
