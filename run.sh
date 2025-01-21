@@ -1,0 +1,1 @@
+python main.py --config=configs/main_configs/bigearthnet.json --seed=222 --method=configs/method/classification/rvit.json --training_config=configs/training/training_per_dataset/rvit/bigearthnet_training.json --mask_threshold=0.75
