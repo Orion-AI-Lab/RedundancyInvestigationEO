@@ -6,10 +6,10 @@ from torch import nn
 import torch.nn.functional as F
 import einops
 import wandb
-import MaskAttentionViT as MaskAttentionViT
+import model_zoo.MaskAttentionViT as MaskAttentionViT
 
 class RViT(nn.Module):
-    def __init__(self, num_classes, backbone, image_size, num_channels, pretrained=True, mask_threshold=0.9,mask_in_token_space=True, pad_value=0.0, attention_mask=False):
+    def __init__(self, num_classes, backbone, image_size, num_channels, pretrained=True, mask_threshold=0.9,mask_in_token_space=True, pad_value=0.0, attention_mask=True):
         """
         Initialize the RViT model.
 
@@ -174,7 +174,7 @@ class RViT(nn.Module):
         # Count how many patches are masked per sample (excluding CLS token)
         masked_patches_per_sample = (~keep_mask[:, 1:]).sum(dim=1)
         unmasked_patches_per_sample = (keep_mask[:, 1:]).sum(dim=1)
-
+        
         # Sum patches across the whole batch
         masked_patches_in_batch = masked_patches_per_sample.sum()
         unmasked_patches_in_batch = unmasked_patches_per_sample.sum() #chech if it is pushed
@@ -302,14 +302,14 @@ class RViT(nn.Module):
                 print("Max len: ", max_len)
 
             if wandb.run:
-                wandb.log({"unmasked_patches_ratio": max_len / total_patches})
+                wandb.log({"unmasked_patches_ratio": torch.median(lens) / total_patches})
 
 
         
             
         # Forward through the model
         x = self.model.norm_pre(x)
-        if self.attention_mask:
+        if self.attention_mask and self.training:
             #token_attention_mask = ~keep_mask  # Invert mask for padding
             cls_mask = torch.zeros(x.shape[0],1,device=x.device,dtype=torch.bool)
             token_attention_mask = torch.cat((cls_mask,token_attention_mask),dim=1)
