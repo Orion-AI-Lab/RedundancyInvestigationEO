@@ -6,9 +6,10 @@ from torch import nn
 import torch.nn.functional as F
 import einops
 import wandb
+import MaskAttentionViT as MaskAttentionViT
 
 class RViT(nn.Module):
-    def __init__(self, num_classes, backbone, image_size, num_channels, pretrained=True, mask_threshold=0.9,mask_in_token_space=True):
+    def __init__(self, num_classes, backbone, image_size, num_channels, pretrained=True, mask_threshold=0.9,mask_in_token_space=True, pad_value=0.0, attention_mask=False):
         """
         Initialize the RViT model.
 
@@ -20,11 +21,18 @@ class RViT(nn.Module):
             pretrained: Whether to use a pretrained model.
             mask_threshold: The threshold for masking similar tokens.
             mask_in_token_space: Whether to mask similar tokens in the token space or in the image space.
+            pad_value: The value to use for padding masked tokens.
+            attention_mask: Whether to use mask attention for the padded tokens
         """
         super(RViT, self).__init__()
         self.mask_in_token_space = mask_in_token_space
         self.mask_threshold = mask_threshold
-        self.model = timm.create_model(backbone,in_chans = num_channels, num_classes=num_classes, img_size=image_size, dynamic_img_pad=True, dynamic_img_size=True,pretrained=pretrained)
+        self.pad_value = pad_value
+        self.attention_mask = attention_mask
+        if not self.attention_mask:
+            self.model = timm.create_model(backbone,in_chans = num_channels, num_classes=num_classes, img_size=image_size, dynamic_img_pad=True, dynamic_img_size=True,pretrained=pretrained)
+        else:
+            self.model = MaskAttentionViT._create_vision_transformer(backbone, img_size=image_size, num_classes=num_classes, in_chans=num_channels, pretrained=pretrained)
         #print(self.model)
 
     def calc_mask(self, x,verbose=False):
@@ -53,7 +61,7 @@ class RViT(nn.Module):
             wandb.log({"mask_ratio":(keep_mask.sum()-1)/keep_mask.shape[0]})
         return x
 
-    def batch_cos_similarity(self,x):
+    def batch_cos_similarity(self, x):
         """
         Calculate the cosine similarity between all pairs of tokens in a batch of samples.
 
@@ -66,8 +74,7 @@ class RViT(nn.Module):
         """
         norms_torch = torch.norm(x, dim=2, keepdim=True)
         normalized_tensor_torch = x / norms_torch
-        cos_sim = torch.bmm(normalized_tensor_torch, normalized_tensor_torch.transpose(1,2))
-        print("checkpoint0:",cos_sim[1,1,:])
+        cos_sim = torch.bmm(normalized_tensor_torch, normalized_tensor_torch.transpose(1, 2))
         return cos_sim
     
     def get_mask(self, cos_sim):
@@ -106,18 +113,16 @@ class RViT(nn.Module):
         # Initialize the keep mask (batch, num_tokens+1) with True (keep all tokens initially)
         batch_size, num_tokens, _ = cos_sim.shape
         keep_mask = torch.ones((batch_size, num_tokens + 1), dtype=torch.bool, device=cos_sim.device)
-        counter = keep_mask.sum(dim=1).tolist()
-        print("Keep_mask:", counter)
         
         # Create a mask for cosine similarity above the threshold
         sim_mask = cos_sim > self.mask_threshold  # (batch, num_tokens, num_tokens)
 
         # Create an upper triangular mask to ignore duplicate pairs and self-pairs (i, i)
         triu_mask = torch.triu(torch.ones_like(sim_mask), diagonal=1).bool()  # (batch, num_tokens, num_tokens)
-       # print(triu_mask[1,1])
+
         # Combine the two masks (only consider the upper triangle and cosine similarities above the threshold)
         combined_mask = sim_mask & triu_mask  # (batch, num_tokens, num_tokens)
-        #print(combined_mask)
+
         # Find which tokens should be marked False (don't keep). We mark the second token (j)
         # Reduce over the third axis (num_tokens) to see if any token j should be masked
         mark_false = combined_mask.any(dim=1)  # (batch, num_tokens)
@@ -159,8 +164,8 @@ class RViT(nn.Module):
         x = x[batch_indices,topk_indices]
 
         # Pad to max_len with zeros (or another suitable value)
-        pad_value = -1  # Change if necessary
-        padded_x = torch.full((x.shape[0], max_len, x.shape[2]), pad_value, device=x.device)
+        #pad_value = 0  # Change if necessary
+        padded_x = torch.full((x.shape[0], max_len, x.shape[2]), self.pad_value, device=x.device)
 
         for i in range(x.shape[0]):
             padded_x[i, :x[i].shape[0]] = x[i]  
@@ -183,7 +188,6 @@ class RViT(nn.Module):
             print("Keep mask shape: ", keep_mask.shape)
             print("Masked in batch: ", masked_patches_in_batch)
             print("Masked ratio: ", masked_ratio)
-            #print(padded_x.shape)
             print(x.shape)
         if wandb.run:
             wandb.log({"unmasked_patches_ratio":unmasked_ratio})
@@ -218,67 +222,110 @@ class RViT(nn.Module):
         masked_similarities = cos_sim * mask.unsqueeze(0)
         mean_similarities = masked_similarities.sum(dim=2) / (cos_sim.shape[1] - 1)
         tok_k_indices = torch.topk(-mean_similarities, k, dim=1).indices
-        print(tok_k_indices[12, 5])
+        print(tok_k_indices[0, :])
         return tok_k_indices
     
-    def forward_mask_in_image_space(self, x,verbose=False):
-        #Mask per batch
-        if self.training and self.mask_threshold<1.0:
+    def forward_mask_in_image_space(self, x, verbose=False):
+        """
+        Mask patches based on cosine similarity and retain the most important ones.
+        Masked patches are replaced with padding.
+        """
+        if self.training and self.mask_threshold < 1.0:
             patch_size = self.model.patch_embed.patch_size[0]
-
-            H = x.shape[2]
-            W = x.shape[3]
-            pad_h = (patch_size - H % patch_size) % patch_size
-            pad_w = (patch_size - W % patch_size) % patch_size
-            tmp_x = F.pad(x, (0, pad_w, 0, pad_h))
-            patches = einops.rearrange(tmp_x,"b c (h p1) (w p2) -> b (h w) (p1 p2 c)", p1=patch_size, p2=patch_size)
             
+            # Ensure input dimensions are multiples of patch size
+            H, W = x.shape[2], x.shape[3]
+            pad_h, pad_w = (patch_size - H % patch_size) % patch_size, (patch_size - W % patch_size) % patch_size
+            tmp_x = F.pad(x, (0, pad_w, 0, pad_h))
+            
+            # Extract patches
+            patches = einops.rearrange(tmp_x, "b c (h p1) (w p2) -> b (h w) (p1 p2 c)", p1=patch_size, p2=patch_size)
+            
+            # Compute cosine similarity
             cos_sim = self.batch_cos_similarity(patches)
-            #keep_mask = self.get_mask(cos_sim)
-            keep_mask = self.get_mask_vectorised(cos_sim)
-            print(keep_mask)
 
-        #Get actual tokens
+            # Get binary mask (True = keep, False = mask)
+            keep_mask = self.get_mask_vectorised(cos_sim)
+
+        # Extract actual token embeddings
         x = self.model.patch_embed(x)
         x = self.model._pos_embed(x)
         x = self.model.patch_drop(x)
-        total_patches = x.shape[1] -1
 
-        #Mask per batch
-        if self.training and self.mask_threshold<1.0:        
-            #Mask based on similarity
-            print(keep_mask)
-            retained_tokens = [x[i, keep_mask[i]] for i in range(x.shape[0])]
-            #Get median length
-            #median_len = torch.median(torch.tensor([tokens.shape[0] for tokens in retained_tokens]))
-            print([tokens.shape[0] for tokens in retained_tokens])
-            max_len = max(tokens.shape[0] for tokens in retained_tokens)
-            max_len = min(max_len, total_patches)
-            #max_len = torch.max(torch.tensor([tokens.shape[0] for tokens in retained_tokens]))
-            print("Max_len:", max_len)
-            #Calc topk indices
-           # topk_indices = self.get_topk_indices(cos_sim,median_len)
-            topk_indices = self.get_topk_indices(cos_sim,max_len)
-            if self.model.global_pool=='token':
-                #Increment indices by 1 to account for the CLS token
-                topk_indices += 1
-            
-            batch_indices = torch.arange(x.shape[0], device=x.device)[:, None]
-            x = x[batch_indices,topk_indices]
-            if verbose:
-                print("Cos sim shape: ",cos_sim.shape)
-                print("Indices shape: ",topk_indices.shape)
-                print("Unmasked shape: ",x.shape)
-                print("Max masked shape: ",x[batch_indices,topk_indices].shape)            
-                print("Max len: ",max_len)            
+        # Handle CLS token separately
+        cls_token = None
+        if self.model.global_pool == 'token':
+            cls_token, x = x[:, :1, :], x[:, 1:]  # Separate CLS token
+
+        total_patches = x.shape[1]  # No CLS token in count
         
-            if wandb.run:
-                wandb.log({"unmasked_patches_ratio":max_len/total_patches})
+        if self.training and self.mask_threshold < 1.0:
+            # **Fix keep_mask Shape Issue**
+            keep_mask = keep_mask[:, :total_patches]  # Ensure it matches x.shape[1]
             
+            # Keep only unmasked patches
+            retained_tokens = [x[i, keep_mask[i]] for i in range(x.shape[0])]
+
+            # Get number of retained tokens per image
+            lens = torch.tensor([tokens.shape[0] for tokens in retained_tokens], dtype=torch.int32)
+
+            # Get max sequence length (ensuring it does not exceed total_patches)
+            max_len = min(max(lens), total_patches)
+
+            # Create a new tensor with padding
+            #pad_value = 0  # Can be changed if needed
+            padded_x = torch.full((x.shape[0], max_len, x.shape[2]), self.pad_value, device=x.device,dtype=x.dtype)
+
+            # Copy retained tokens into padded_x
+            if self.attention_mask:
+                #initialize attention mask
+                token_attention_mask = torch.zeros((x.shape[0], max_len), dtype=torch.bool, device=x.device)
+            for img in range(x.shape[0]):
+                num_tokens = retained_tokens[img].shape[0]
+                padded_x[img, :num_tokens] = retained_tokens[img]
+                if self.attention_mask:
+                    token_attention_mask[img, num_tokens:] = True
+
+            x = padded_x
+            
+
+            # Add CLS token back if needed
+            if self.model.global_pool == 'token':
+                cls_token = cls_token.expand(x.shape[0], -1, -1)  # Ensure CLS has correct batch size
+                x = torch.cat([cls_token, x], dim=1)
+
+            if verbose:
+                print("Cos sim shape: ", cos_sim.shape)
+                print("Mask shape: ", keep_mask.shape)
+                print("Unmasked shape: ", x.shape)
+                print("Max masked shape: ", x.shape)
+                print("Max len: ", max_len)
+
+            if wandb.run:
+                wandb.log({"unmasked_patches_ratio": max_len / total_patches})
+
+
+        
+            
+        # Forward through the model
         x = self.model.norm_pre(x)
-        x = self.model.blocks(x)
+        if self.attention_mask:
+            #token_attention_mask = ~keep_mask  # Invert mask for padding
+            cls_mask = torch.zeros(x.shape[0],1,device=x.device,dtype=torch.bool)
+            token_attention_mask = torch.cat((cls_mask,token_attention_mask),dim=1)
+            
+            token_attention_mask = token_attention_mask.unsqueeze(1)
+            token_attention_mask = token_attention_mask.unsqueeze(1)
+            
+            for module in self.model.blocks:
+                x = module(x, token_attention_mask)
+        else:
+            x = self.model.blocks(x)
+
         x = self.model.norm(x)
+        
         return x
+
     
     def forward(self, x):
         if self.mask_in_token_space:
@@ -290,13 +337,25 @@ class RViT(nn.Module):
 
 
 if __name__ == '__main__':
-    model = RViT(num_classes=14, backbone='vit_base_patch16_224', image_size=120, num_channels=14,mask_threshold=0.8,mask_in_token_space=False)
-    x = torch.randn(64, 14, 60, 60)
+    model = RViT(num_classes=14, backbone='vit_base_patch16_224', image_size=128, num_channels=14,mask_threshold=0.9,mask_in_token_space=False, pad_value = 0.0, attention_mask=True)
     
-    x = torch.cat((x,x),dim=2)
-    print(x.shape)
-    x = torch.cat((x,x),dim=3)
-    print(x.shape)
+    def create_rand():
+        # Step 1: Create a random 16x16 block
+        block = torch.randn(14, 16, 16)
+
+        # Step 2: Concatenate 8 blocks horizontally (along the width)
+        row = torch.cat([block] * 8, dim=2)  # Shape: (14, 16, 128)
+
+        # Step 3: Concatenate 8 such rows vertically (along the height)
+        tensor_8x8 = torch.cat([row] * 8, dim=1)  # Shape: (14, 128, 128)
+        x = tensor_8x8.unsqueeze(0)
+        return x
+    x = create_rand()
+    for i in range(10):
+        x = torch.cat((x,create_rand()),dim=0)
+        
+    x = torch.cat((x,torch.randn(1,14,128,128)),dim=0)
+    x = torch.cat((x,torch.randn(1,14,128,128)),dim=0)
     model.train()
     out = model(x)
     print(out.shape)
