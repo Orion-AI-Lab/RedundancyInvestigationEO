@@ -6,9 +6,10 @@ from torch import nn
 import torch.nn.functional as F
 import einops
 import wandb
+import MaskAttentionViT as MaskAttentionViT
 
 class RViT(nn.Module):
-    def __init__(self, num_classes, backbone, image_size, num_channels, pretrained=True, mask_threshold=0.9,mask_in_token_space=True, pad_value=0):
+    def __init__(self, num_classes, backbone, image_size, num_channels, pretrained=True, mask_threshold=0.9,mask_in_token_space=True, pad_value=0.0, attention_mask=False):
         """
         Initialize the RViT model.
 
@@ -20,12 +21,18 @@ class RViT(nn.Module):
             pretrained: Whether to use a pretrained model.
             mask_threshold: The threshold for masking similar tokens.
             mask_in_token_space: Whether to mask similar tokens in the token space or in the image space.
+            pad_value: The value to use for padding masked tokens.
+            attention_mask: Whether to use mask attention for the padded tokens
         """
         super(RViT, self).__init__()
         self.mask_in_token_space = mask_in_token_space
         self.mask_threshold = mask_threshold
         self.pad_value = pad_value
-        self.model = timm.create_model(backbone,in_chans = num_channels, num_classes=num_classes, img_size=image_size, dynamic_img_pad=True, dynamic_img_size=True,pretrained=pretrained)
+        self.attention_mask = attention_mask
+        if not self.attention_mask:
+            self.model = timm.create_model(backbone,in_chans = num_channels, num_classes=num_classes, img_size=image_size, dynamic_img_pad=True, dynamic_img_size=True,pretrained=pretrained)
+        else:
+            self.model = MaskAttentionViT._create_vision_transformer(backbone, img_size=image_size, num_classes=num_classes, in_chans=num_channels, pretrained=pretrained)
         #print(self.model)
 
     def calc_mask(self, x,verbose=False):
@@ -251,11 +258,11 @@ class RViT(nn.Module):
             cls_token, x = x[:, :1, :], x[:, 1:]  # Separate CLS token
 
         total_patches = x.shape[1]  # No CLS token in count
-
+        
         if self.training and self.mask_threshold < 1.0:
             # **Fix keep_mask Shape Issue**
             keep_mask = keep_mask[:, :total_patches]  # Ensure it matches x.shape[1]
-            key_padding_mask = ~keep_mask  # Invert mask for padding
+            
             # Keep only unmasked patches
             retained_tokens = [x[i, keep_mask[i]] for i in range(x.shape[0])]
 
@@ -264,18 +271,23 @@ class RViT(nn.Module):
 
             # Get max sequence length (ensuring it does not exceed total_patches)
             max_len = min(max(lens), total_patches)
-            print("Max_len:", max_len)
 
             # Create a new tensor with padding
             #pad_value = 0  # Can be changed if needed
             padded_x = torch.full((x.shape[0], max_len, x.shape[2]), self.pad_value, device=x.device,dtype=x.dtype)
 
             # Copy retained tokens into padded_x
+            if self.attention_mask:
+                #initialize attention mask
+                token_attention_mask = torch.zeros((x.shape[0], max_len), dtype=torch.bool, device=x.device)
             for img in range(x.shape[0]):
                 num_tokens = retained_tokens[img].shape[0]
                 padded_x[img, :num_tokens] = retained_tokens[img]
+                if self.attention_mask:
+                    token_attention_mask[img, num_tokens:] = True
 
             x = padded_x
+            
 
             # Add CLS token back if needed
             if self.model.global_pool == 'token':
@@ -292,18 +304,27 @@ class RViT(nn.Module):
             if wandb.run:
                 wandb.log({"unmasked_patches_ratio": max_len / total_patches})
 
+
+        
+            
         # Forward through the model
         x = self.model.norm_pre(x)
-        x = self.model.blocks(x)
-       # x = self.apply_transformer_blocks(x, key_padding_mask)
+        if self.attention_mask:
+            #token_attention_mask = ~keep_mask  # Invert mask for padding
+            cls_mask = torch.zeros(x.shape[0],1,device=x.device,dtype=torch.bool)
+            token_attention_mask = torch.cat((cls_mask,token_attention_mask),dim=1)
+            
+            token_attention_mask = token_attention_mask.unsqueeze(1)
+            token_attention_mask = token_attention_mask.unsqueeze(1)
+            
+            for module in self.model.blocks:
+                x = module(x, token_attention_mask)
+        else:
+            x = self.model.blocks(x)
+
         x = self.model.norm(x)
         
         return x
-
-#    def apply_transformer_blocks(self, x, key_padding_mask):
- #       for block in self.model.blocks:
-  #          x = block(x, key_padding_mask=key_padding_mask)
-   #     return x
 
     
     def forward(self, x):
@@ -316,14 +337,25 @@ class RViT(nn.Module):
 
 
 if __name__ == '__main__':
-    model = RViT(num_classes=14, backbone='vit_base_patch16_224', image_size=128, num_channels=14,mask_threshold=0.9,mask_in_token_space=False, pad_value = 0)
-    #x = torch.randn(64, 14, 64, 64)
-    #x = torch.ones(64, 14, 128, 128)
-    #x = torch.cat((x,x),dim=2)
-    x = torch.randn(64,14, 128, 128)
-    #print(x.shape)
-    #x = torch.cat((x,x),dim=3)
-    print(x.shape)
+    model = RViT(num_classes=14, backbone='vit_base_patch16_224', image_size=128, num_channels=14,mask_threshold=0.9,mask_in_token_space=False, pad_value = 0.0, attention_mask=True)
+    
+    def create_rand():
+        # Step 1: Create a random 16x16 block
+        block = torch.randn(14, 16, 16)
+
+        # Step 2: Concatenate 8 blocks horizontally (along the width)
+        row = torch.cat([block] * 8, dim=2)  # Shape: (14, 16, 128)
+
+        # Step 3: Concatenate 8 such rows vertically (along the height)
+        tensor_8x8 = torch.cat([row] * 8, dim=1)  # Shape: (14, 128, 128)
+        x = tensor_8x8.unsqueeze(0)
+        return x
+    x = create_rand()
+    for i in range(10):
+        x = torch.cat((x,create_rand()),dim=0)
+        
+    x = torch.cat((x,torch.randn(1,14,128,128)),dim=0)
+    x = torch.cat((x,torch.randn(1,14,128,128)),dim=0)
     model.train()
     out = model(x)
     print(out.shape)
