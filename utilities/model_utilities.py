@@ -68,7 +68,7 @@ def create_classifier(configs):
                 patch_size=8, embed_dim=768, depth=12, num_heads=12, mlp_ratio=4, img_size=configs['image_size'],in_chans=configs['in_channels'],num_classes=configs['num_classes'],
                 qkv_bias=True, norm_layer=partial(nn.LayerNorm, eps=1e-6), configs=configs)
     elif "rvit" in configs and configs["rvit"]:
-        model = RViT.RViT( num_classes=configs['num_classes'], backbone=configs['backbone'], image_size=configs["image_size"], num_channels=configs["in_channels"], pretrained=configs['pretrained'], mask_threshold=configs["mask_threshold"],mask_in_token_space=configs['mask_in_token_space'])
+        model = RViT.RViT( num_classes=configs['num_classes'], backbone=configs['backbone'], image_size=configs["image_size"], num_channels=configs["in_channels"], pretrained=configs['pretrained'], mask_threshold=configs["mask_threshold"],mask_in_token_space=configs['mask_in_token_space'],  implementation=configs['implementation'], pad_value = configs['pad_value'], retain_percent=configs['retain_percent'], attention_mask=configs['attention_mask'])
     else:
         model = timm.create_model(
             configs["backbone"].lower(),
