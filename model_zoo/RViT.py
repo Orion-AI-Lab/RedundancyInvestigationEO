@@ -45,7 +45,7 @@ class RViT(nn.Module):
             raise ValueError("Invalid or missing `implementation`. "
                                 "Choose from: [median, max_len, topx%]")
         
-        if self.implementation == "topx%" and self.retain_percent <= 0:
+        if self.implementation == "topx%" and (self.retain_percent <= 0 or self.retain_percent >= 100):
             raise ValueError("Value of retain_percent must be greater than 0 and lower than 100 for topx% implementation.")
         
 
@@ -254,9 +254,6 @@ class RViT(nn.Module):
             # Extract patches
             patches = einops.rearrange(x, "b c (h p1) (w p2) -> b (h w) (p1 p2 c)", p1=patch_size, p2=patch_size)
 
-            # Compute cosine similarity
-            cos_sim = self.batch_cos_similarity(patches)
-
 
         # Extract actual token embeddings
         x = self.model.patch_embed(x)
@@ -272,31 +269,31 @@ class RViT(nn.Module):
         
         #3 Options: 1st-topx%, 2nd-median, 3rd-max_len
         if self.implementation == "topx%":
-            # Get top-k indices (ensures fixed-size output)
-            keep_indices = self.get_topk_indices(cos_sim, int(cos_sim.shape[1] * (self.retain_percent / 100)))
+         
             if self.training and self.retain_percent < 100:
+                # Compute cosine similarity
+                cos_sim = self.batch_cos_similarity(x)
+                # Get top-k indices (ensures fixed-size output)
+                keep_indices = self.get_topk_indices(cos_sim, int(cos_sim.shape[1] * (self.retain_percent / 100)))
                 # Ensure we select the same number of patches across all samples
                 k = keep_indices.shape[1]  # Number of patches to retain
                 # Gather selected patches
                 batch_indices = torch.arange(x.shape[0], device=x.device).unsqueeze(-1).expand(-1, k)
                 x = x[batch_indices, keep_indices]  # Efficient batch gather
 
-                # Re-add CLS token if necessary
-                if self.model.global_pool == 'token':
-                    cls_token = cls_token.expand(x.shape[0], -1, -1)
-                    x = torch.cat([cls_token, x], dim=1)
-
                 if verbose:
                     print(f"Cos sim shape: {cos_sim.shape}, Selected indices: {keep_indices.shape}, Output shape: {x.shape}")
 
                 if wandb.run:
                     wandb.log({"unmasked_patches_ratio": k / total_patches})
-                print("topx%", k, self.retain_percent)
+                #print("topx%", k, self.retain_percent)
 
         elif self.implementation == "max_len":
-            # Get binary mask (True = keep, False = mask)
-            keep_mask = self.get_mask_vectorised(cos_sim)
             if self.training and self.mask_threshold < 1.0:
+                # Compute cosine similarity
+                cos_sim = self.batch_cos_similarity(x)
+                # Get binary mask (True = keep, False = mask)
+                keep_mask = self.get_mask_vectorised(cos_sim)
                 keep_mask = keep_mask[:, :total_patches]  # Ensure matching shape
 
                 # **Vectorized Retained Tokens Selection**
@@ -317,26 +314,19 @@ class RViT(nn.Module):
                     token_attention_mask = torch.zeros((x.shape[0], max_len), dtype=torch.bool, device=x.device)
                     token_attention_mask[~mask[:, :max_len]] = True  # True for masked-out tokens
 
-                # Re-add CLS token if necessary
-                if self.model.global_pool == 'token':
-                    cls_token = cls_token.expand(x.shape[0], -1, -1)
-                    x = torch.cat([cls_token, x], dim=1)
-
-                    if self.attention_mask:
-                        cls_mask = torch.zeros((x.shape[0], 1), device=x.device, dtype=torch.bool)
-                        token_attention_mask = torch.cat((cls_mask, token_attention_mask), dim=1)
-
                 if verbose:
                     print(f"Cos sim shape: {cos_sim.shape}, Mask shape: {keep_mask.shape}, Unmasked shape: {x.shape}, Max len: {max_len}")
 
                 if wandb.run:
                     wandb.log({"unmasked_patches_ratio": max_len / total_patches})
-                print("max_len", max_len)
+                #print("max_len", max_len)
 
         else: #median
-            # Get binary mask (True = keep, False = mask)
-            keep_mask = self.get_mask_vectorised(cos_sim)
-            if self.training and self.mask_threshold<1.0:   
+            if self.training and self.mask_threshold<1.0:
+                # Compute cosine similarity
+                cos_sim = self.batch_cos_similarity(x)
+                # Get binary mask (True = keep, False = mask)
+                keep_mask = self.get_mask_vectorised(cos_sim)   
                 keep_mask = keep_mask[:, :total_patches]  # Ensure matching shape     
             #Mask based on similarity
                 retained_tokens = [x[i, keep_mask[i]] for i in range(x.shape[0])]
@@ -347,11 +337,6 @@ class RViT(nn.Module):
                 
                 #Calc topk indices
                 topk_indices = self.get_topk_indices(cos_sim,median_len)
-               # Re-add CLS token if necessary
-                if self.model.global_pool == 'token':
-                    cls_token = cls_token.expand(x.shape[0], -1, -1)
-                    x = torch.cat([cls_token, x], dim=1)
-                
                 batch_indices = torch.arange(x.shape[0], device=x.device)[:, None]
                 x = x[batch_indices,topk_indices]
                 
@@ -367,7 +352,15 @@ class RViT(nn.Module):
                 print("DEBUG: Cosine similarity shape:", cos_sim.shape)
                 print(f"batch_indices shape: {batch_indices.shape}, topk_indices shape: {topk_indices.shape}")
                 print("DEBUG: x shape:", x.shape)
+        
+        # Re-add CLS token if necessary
+        if self.model.global_pool == 'token':
+                cls_token = cls_token.expand(x.shape[0], -1, -1)
+                x = torch.cat([cls_token, x], dim=1)
 
+        if self.attention_mask:
+                cls_mask = torch.zeros((x.shape[0], 1), device=x.device, dtype=torch.bool)
+                token_attention_mask = torch.cat((cls_mask, token_attention_mask), dim=1)
 
         # Forward through the model
         x = self.model.norm_pre(x)
@@ -395,7 +388,7 @@ class RViT(nn.Module):
 
 
 if __name__ == '__main__':
-    model = RViT(num_classes=14, backbone='vit_base_patch16_224', image_size=128, num_channels=14, mask_threshold=0.9, mask_in_token_space=False, implementation="max_len", pad_value = 0.0, retain_percent=0, attention_mask=False)
+    model = RViT(num_classes=14, backbone='vit_base_patch16_224', image_size=128, num_channels=14, mask_threshold=0.9, mask_in_token_space=False, implementation="topx%", pad_value = 0.0, retain_percent=60, attention_mask=False)
     
     def create_rand():
         # Step 1: Create a random 16x16 block
