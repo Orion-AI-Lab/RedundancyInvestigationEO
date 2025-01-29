@@ -534,7 +534,7 @@ def create_webdataset_loaders(
                         mean = list((configs["mean"][:2]))
                         std = list((configs["std"][:2]))
                         normalization = transforms.Normalize(mean=mean, std=std)
-                if "rgb" not in configs or (not configs['rgb'] and not configs['sar']):
+                if "rgb" not in configs or (not configs['rgb'] and ('sar' not in configs or not configs['sar'])):
                     normalization = transforms.Normalize(mean=configs["mean"], std=configs["std"])
                 image = normalization(image)
                 
@@ -644,7 +644,7 @@ def create_webdataset_loaders(
                         mean = list((configs["mean"][:2]))
                         std = list((configs["std"][:2]))
                         normalization = transforms.Normalize(mean=mean, std=std)
-                if "rgb" not in configs or (not configs['rgb'] and not configs['sar']):
+                if "rgb" not in configs or (not configs['rgb'] and ('sar' not in configs or not configs['sar'])):
                     normalization = transforms.Normalize(mean=configs["mean"], std=configs["std"])
                 #normalization = transforms.Normalize(mean=configs["mean"], std=configs["std"])
                 image = normalization(image)
