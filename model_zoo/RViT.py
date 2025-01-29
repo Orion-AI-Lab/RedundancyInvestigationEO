@@ -35,15 +35,15 @@ class RViT(nn.Module):
         if not self.attention_mask:
             self.model = timm.create_model(backbone,in_chans = num_channels, num_classes=num_classes, img_size=image_size, dynamic_img_pad=True, dynamic_img_size=True,pretrained=pretrained)
         else:
-            if self.implementation in ["median", "topx%"]:
+            if self.implementation in ["median", "topx%", "vit"]:
                 raise ValueError("Invalid arguments. "
                                 "Change the attention_mask to False or the implementation to max_len")
             self.model = MaskAttentionViT._create_vision_transformer(backbone, img_size=image_size, num_classes=num_classes, in_chans=num_channels, pretrained=pretrained)
          # Ensure padding implementation is provided
             
-        if self.implementation not in ["median", "max_len", "topx%"]:
+        if self.implementation not in ["median", "max_len", "topx%", "vit"]:
             raise ValueError("Invalid or missing `implementation`. "
-                                "Choose from: [median, max_len, topx%]")
+                                "Choose from: [median, max_len, topx%, vit]")
         
         if self.implementation == "topx%" and (self.retain_percent <= 0 or self.retain_percent >= 100):
             raise ValueError("Value of retain_percent must be greater than 0 and lower than 100 for topx% implementation.")
@@ -321,7 +321,7 @@ class RViT(nn.Module):
                     wandb.log({"unmasked_patches_ratio": max_len / total_patches})
                 #print("max_len", max_len)
 
-        else: #median
+        elif self.implementation == "median":
             if self.training and self.mask_threshold<1.0:
                 # Compute cosine similarity
                 cos_sim = self.batch_cos_similarity(x)
@@ -346,12 +346,18 @@ class RViT(nn.Module):
 
                 if wandb.run:
                     wandb.log({"unmasked_patches_ratio": median_len / total_patches})
-                print("median", median_len / total_patches)
-                print("DEBUG: Retained token lengths:", [tokens.shape[0] for tokens in retained_tokens])
-                print("DEBUG: Median length before casting:", median_len)
-                print("DEBUG: Cosine similarity shape:", cos_sim.shape)
-                print(f"batch_indices shape: {batch_indices.shape}, topk_indices shape: {topk_indices.shape}")
-                print("DEBUG: x shape:", x.shape)
+                #print("median", median_len / total_patches)
+                #print("DEBUG: Retained token lengths:", [tokens.shape[0] for tokens in retained_tokens])
+                #print("DEBUG: Median length before casting:", median_len)
+                #print("DEBUG: Cosine similarity shape:", cos_sim.shape)
+                #print(f"batch_indices shape: {batch_indices.shape}, topk_indices shape: {topk_indices.shape}")
+                #print("DEBUG: x shape:", x.shape)
+            
+            else: #vit
+                    if wandb.run:
+                        wandb.log({"total_patches": total_patches})
+
+
         
         # Re-add CLS token if necessary
         if self.model.global_pool == 'token':
@@ -388,7 +394,7 @@ class RViT(nn.Module):
 
 
 if __name__ == '__main__':
-    model = RViT(num_classes=14, backbone='vit_base_patch16_224', image_size=128, num_channels=14, mask_threshold=0.9, mask_in_token_space=False, implementation="topx%", pad_value = 0.0, retain_percent=60, attention_mask=False)
+    model = RViT(num_classes=14, backbone='vit_base_patch16_224', image_size=128, num_channels=14, mask_threshold=0.9, mask_in_token_space=False, implementation="vit", pad_value = 0.0, retain_percent=60, attention_mask=False)
     
     def create_rand():
         # Step 1: Create a random 16x16 block
