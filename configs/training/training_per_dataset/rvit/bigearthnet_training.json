@@ -24,7 +24,7 @@
     "pretrained_model_path": "/home/mila/n/nikolaos.bountos/Projects/Forest-Monitoring-Benchmark/checkpoints/mae/all/vit_patch_16_depth_12_heads_6/mask_ratio_0.75/vit_103.pt", //path for the checkpoint to be evaluated under the linear eval protocol
     "resume_checkpoint_path": null, // checkpoint to resume training
     "enforce_resize": 128, // if not none, data will be resized in both train/evaluation to the provided value (only for webdataset setting),
-    "change_finetuning_resolution": 120, // If not none, the finetuning vit will have its positional embedding changed to support the new res
+    "change_finetuning_resolution": null, // If not none, the finetuning vit will have its positional embedding changed to support the new res
     "finetuning_patch_size": 16, // In accordance to finetuning resolution. Ideally keep it the same as in training
     "start_epoch": 0, // epoch to continue training
     "log_images": false, // log segmentation masks and images to wandb

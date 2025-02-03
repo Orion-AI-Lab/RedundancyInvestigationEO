@@ -184,6 +184,12 @@ def load_configs(args=None):
     method_config = load_config_file(method_config_path)
     if args.mask_threshold is not None:
         method_config["mask_threshold"] = args.mask_threshold
+    if args.implementation is not None:
+        method_config["implementation"] = args.implementation
+    if args.attention_mask is not None:
+        method_config["attention_mask"] = args.attention_mask
+    if args.retain_percent is not None:
+        method_config["retain_percent"] = args.retain_percent
     config.update(method_config)
 
     # Load training configs
