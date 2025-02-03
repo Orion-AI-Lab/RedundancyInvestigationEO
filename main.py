@@ -71,9 +71,9 @@ if __name__ == "__main__":
     parser.add_argument("--wandb_id_resume", default=None)
     parser.add_argument("--seed", default=0, type=int)
     parser.add_argument("--mask_threshold", default=None, type=float)
-    parser.add_argument("--implementation", default=None, type=float)
-    parser.add_argument("--attention_mask", default=None, type=float)
-    parser.add_argument("--retain_percent", default=None, type=float)
+    parser.add_argument("--implementation", default=None, type=str)
+    parser.add_argument("--attention_mask", default=None, type=bool)
+    parser.add_argument("--retain_percent", default=None, type=int)
 
     args = parser.parse_args()
 
