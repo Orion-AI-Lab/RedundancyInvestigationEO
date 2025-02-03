@@ -451,6 +451,7 @@ def create_webdataset_loaders(
                     or configs["dataset"] == "forestnet"
                     or configs["dataset"] == "fivebillionpixels"
                     or configs["dataset"] == "flair2"
+                    or configs["dataset"] == "bigearthnet"
                 ):
                     if configs["task"] == "classification":
                         image = image.permute(1, 2, 0).numpy()
@@ -577,6 +578,7 @@ def create_webdataset_loaders(
                     or configs["dataset"] == "forestnet"
                     or configs["dataset"] == "fivebillionpixels"
                     or configs["dataset"] == "flair2"
+                    or configs["dataset"] == "bigearthnet"
                 ):
                     if configs["task"] == "classification":
                         image = image.permute(1, 2, 0).numpy()

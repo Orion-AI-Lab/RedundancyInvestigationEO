@@ -1,11 +1,11 @@
 {
-    "backbone":"vit_base_patch16_224.augreg_in21k",
-    "mask_threshold":0.7,
-    "rvit":true,
-    "mask_in_token_space":false,
-    "implementation":"topx%",
-    "retain_percent":25,
-    "pad_value":0.0,
-    "attention_mask":false,
-    "pretrained":true
+    "backbone": "vit_base_patch16_224.augreg_in21k",
+    "mask_threshold": 0,
+    "rvit": true,
+    "mask_in_token_space": false,
+    "implementation": "topx%",
+    "retain_percent": 2,
+    "pad_value": 0.0,
+    "attention_mask": false,
+    "pretrained": true
 }
