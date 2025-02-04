@@ -188,6 +188,8 @@ def load_configs(args=None):
         method_config["implementation"] = args.implementation
     if args.attention_mask is not None:
         method_config["attention_mask"] = args.attention_mask
+    if args.backbone is not None:
+        method_config["backbone"] = args.backbone
     if args.retain_percent is not None:
         method_config["retain_percent"] = args.retain_percent
     config.update(method_config)

@@ -430,7 +430,10 @@ class VisionTransformer(nn.Module):
         - https://arxiv.org/abs/2010.11929
     """
     dynamic_img_size: Final[bool]
-
+        #- patch_size = 16
+        #- embed_dim = 768 192
+        #- depth = 12
+        #- num_heads = 12 3
     def __init__(
             self,
             img_size: Union[int, Tuple[int, int]] = 224,
@@ -2211,6 +2214,41 @@ with warnings.catch_warnings():
         model_args = dict(patch_size=16, embed_dim=768, depth=12, num_heads=12)
         model = _create_vision_transformer('vit_base_patch16_224', pretrained=pretrained, **dict(model_args, **kwargs))
         return model
+    
+
+   # @register_model
+    #def vit_small_patch16_224.augreg_in21k(pretrained: bool = False, **kwargs) -> VisionTransformer:
+        """ ViT-Small (ViT-S/16) adapted from the original paper.
+    
+    Typically, ViT-Small uses:
+      - patch_size = 16
+      - embed_dim = 384
+      - depth = 12
+      - num_heads = 6
+      
+    ImageNet-1k weights fine-tuned from in21k @ 224x224.
+    Source: https://github.com/google-research/vision_transformer.
+    """
+       # model_args = dict(patch_size=16, embed_dim=384, depth=12, num_heads=6)
+        #model = _create_vision_transformer('vit_small_patch16_224', pretrained=pretrained, **dict(model_args, **kwargs))
+        #return model
+
+    #@register_model
+    #def vit_tiny_patch16_224_in21k(pretrained: bool = False, **kwargs) -> VisionTransformer:
+        """ ViT-Tiny (ViT-T/16) adapted from the original paper.
+        
+        Typically, ViT-Tiny uses:
+        - patch_size = 16
+        - embed_dim = 192
+        - depth = 12
+        - num_heads = 3
+        
+        ImageNet-1k weights fine-tuned from in21k @ 224x224.
+        Source: https://github.com/google-research/vision_transformer.
+        """
+     #   model_args = dict(patch_size=16, embed_dim=192, depth=12, num_heads=3)
+      #  model = _create_vision_transformer('vit_tiny_patch16_224', pretrained=pretrained, **dict(model_args, **kwargs))
+       # return model
 
 
     @register_model

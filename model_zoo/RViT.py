@@ -32,14 +32,22 @@ class RViT(nn.Module):
         self.retain_percent = retain_percent
         self.attention_mask = attention_mask
         self.implementation = implementation
-        
+        self.backbone = backbone
+
         if not self.attention_mask:
             self.model = timm.create_model(backbone,in_chans = num_channels, num_classes=num_classes, img_size=image_size, dynamic_img_pad=True, dynamic_img_size=True,pretrained=pretrained)
         else:
             if self.implementation in ["median", "topx%", "vit"]:
                 raise ValueError("Invalid arguments. "
                                 "Change the attention_mask to False or the implementation to max_len")
-            self.model = MaskAttentionViT._create_vision_transformer(backbone, img_size=image_size, num_classes=num_classes, dynamic_img_pad=True, dynamic_img_size=True, in_chans=num_channels, pretrained=pretrained)
+            if "tiny" in backbone:
+                variant = "tiny"
+            elif "small" in backbone:
+                variant = "small"
+            else:
+                variant = "base"
+
+            self.model = MaskAttentionViT._create_vision_transformer(backbone, img_size=image_size, num_classes=num_classes, dynamic_img_pad=True, dynamic_img_size=True, in_chans=num_channels, pretrained=pretrained, variant=variant)
          # Ensure padding implementation is provided
             
         if self.implementation not in ["median", "max_len", "topx%", "vit"]:
@@ -335,9 +343,8 @@ class RViT(nn.Module):
                 #Calc topk indices
                 topk_indices = self.get_topk_indices(cos_sim,median_len)
                 batch_indices = torch.arange(x.shape[0], device=x.device)[:, None]
-                print(x)
+
                 x = x[batch_indices,topk_indices]
-                print(x)
 
                 if verbose:
                     print(f"Cos sim shape: {cos_sim.shape}, Mask shape: {keep_mask.shape}, Unmasked shape: {x.shape}, Median length: {median_len}")
@@ -346,9 +353,9 @@ class RViT(nn.Module):
                     wandb.log({"unmasked_patches_ratio": median_len / total_patches})
 
             
-            else: #vit
-                    if wandb.run:
-                        wandb.log({"total_patches": total_patches})
+        else: #vit
+                if wandb.run:
+                    wandb.log({"total_patches": total_patches})
 
         
         # Re-add CLS token if necessary
