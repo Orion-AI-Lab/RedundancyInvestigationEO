@@ -505,7 +505,7 @@ class VisionTransformer(nn.Module):
         use_fc_norm = global_pool in ('avg', 'avgmax', 'max') if fc_norm is None else fc_norm
         norm_layer = get_norm_layer(norm_layer) or partial(nn.LayerNorm, eps=1e-6)
         act_layer = get_act_layer(act_layer) or nn.GELU
-
+        self.MaskAttentionViT = True
         self.num_classes = num_classes
         self.global_pool = global_pool
         self.num_features = self.head_hidden_size = self.embed_dim = embed_dim  # for consistency with other models

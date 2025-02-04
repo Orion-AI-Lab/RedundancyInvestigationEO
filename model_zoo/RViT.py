@@ -43,7 +43,14 @@ class RViT(nn.Module):
 
             self.model = timm.create_model(backbone, img_size=image_size, num_classes=num_classes, dynamic_img_pad=True, dynamic_img_size=True, in_chans=num_channels, pretrained=pretrained)
          # Ensure padding implementation is provided
-            
+        
+        if hasattr(self.model, 'MaskAttentionViT'):
+            print("Initiliazing MaskAttentionViT")
+            if wandb.run:
+                wandb.log({"MaskAttentionViT":True})
+            if not self.attention_mask:
+                raise ValueError("MaskAttentionViT requires attention_mask=True")
+              
         if self.implementation not in ["median", "max_len", "topx%", "vit"]:
             raise ValueError("Invalid or missing `implementation`. "
                                 "Choose from: [median, max_len, topx%, vit]")
