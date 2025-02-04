@@ -47,7 +47,7 @@ class RViT(nn.Module):
         if hasattr(self.model, 'MaskAttentionViT'):
             print("Initiliazing MaskAttentionViT")
             if wandb.run:
-                wandb.log({"MaskAttentionViT":True})
+                wandb.config.update({"MaskAttentionViT":True})
             if not self.attention_mask:
                 raise ValueError("MaskAttentionViT requires attention_mask=True")
               
