@@ -5,13 +5,13 @@
 # Debugging options are enabled for detailed execution tracing.
 
 # Exit immediately if a command exits with a non-zero status.
-set -e
+#set -e
 # Print each command before executing it (for debugging purposes).
 #set -x
 
 # Parameter arrays
 vit_backbones=("vit_tiny_patch16_224.augreg_in21k" "vit_small_patch16_224.augreg_in21k" "vit_base_patch16_224.augreg_in21k")
-implementations=("topx%" "median" ) #+ "max_len"
+implementations=("topx%" "median" "max_len")
 mask_thresholds=(0.25 0.6 0.7 0.75 0.8 0.85)
 retain_percents=(85 50 40 25 15 5)
 

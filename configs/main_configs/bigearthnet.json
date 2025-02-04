@@ -1,7 +1,7 @@
 {
     "dataset": "bigearthnet", // Options: All available datasets
     "wandb": true,
-    "wandb_project": "RedundancyInvestigation",
+    "wandb_project": "RedundancyInvestigation_v2",
     "wandb_entity": "deepcube",
     "wandb_id_resume": null,
     "rgb": false,

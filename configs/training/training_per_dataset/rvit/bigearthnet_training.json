@@ -1,6 +1,6 @@
 {
     "epochs": 20,
-    "batch_size": 128,
+    "batch_size": 256,
     "num_workers": 4,
     "lr": 1e-4,
     "weight_decay": 1e-4,
