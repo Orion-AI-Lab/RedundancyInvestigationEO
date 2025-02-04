@@ -6,8 +6,6 @@ from torch import nn
 import torch.nn.functional as F
 import einops
 import wandb
-from model_zoo import MaskAttentionViT as MaskAttentionViT
-#import MaskAttentionViT as MaskAttentionViT
 
 class RViT(nn.Module):
     def __init__(self, num_classes, backbone, image_size, num_channels, pretrained=True, mask_threshold=0.9,mask_in_token_space=True, implementation="max_len", pad_value=0.0, retain_percent=0,attention_mask=False):
@@ -37,17 +35,13 @@ class RViT(nn.Module):
         if not self.attention_mask:
             self.model = timm.create_model(backbone,in_chans = num_channels, num_classes=num_classes, img_size=image_size, dynamic_img_pad=True, dynamic_img_size=True,pretrained=pretrained)
         else:
+            from model_zoo import MaskAttentionViT as MaskAttentionViT
+
             if self.implementation in ["median", "topx%", "vit"]:
                 raise ValueError("Invalid arguments. "
                                 "Change the attention_mask to False or the implementation to max_len")
-            if "tiny" in backbone:
-                variant = "tiny"
-            elif "small" in backbone:
-                variant = "small"
-            else:
-                variant = "base"
 
-            self.model = MaskAttentionViT._create_vision_transformer(backbone, img_size=image_size, num_classes=num_classes, dynamic_img_pad=True, dynamic_img_size=True, in_chans=num_channels, pretrained=pretrained, variant=variant)
+            self.model = timm.create_model(backbone, img_size=image_size, num_classes=num_classes, dynamic_img_pad=True, dynamic_img_size=True, in_chans=num_channels, pretrained=pretrained)
          # Ensure padding implementation is provided
             
         if self.implementation not in ["median", "max_len", "topx%", "vit"]:
