@@ -422,6 +422,8 @@ def create_webdataset_loaders(
         for sample in src:
             image = torch.load(io.BytesIO(sample["image.pth"])).float()
             label = torch.load(io.BytesIO(sample["labels.pth"]))
+            if configs['dataset']=='mlrsnet':
+                    label = label.float()
             if configs['dataset']=='sen12ms':
                 label[label>=configs['threshold']] = 1
                 label[label<configs['threshold']] = 0                
@@ -441,6 +443,7 @@ def create_webdataset_loaders(
                 if configs["dataset"] == "rapidai4eo":
                     label[label >= configs["class_threshold"]] = 1
                     label[label < configs["class_threshold"]] = 0
+               
             if configs["dataset"] == "uav" or configs["dataset"] == "woody":
                 # Remove alpha channel from combined uav datasets (Some have it some don't)
                 image = image[:3, :, :]
@@ -562,6 +565,8 @@ def create_webdataset_loaders(
         for sample in src:
             image = torch.load(io.BytesIO(sample["image.pth"])).float()
             label = torch.load(io.BytesIO(sample["labels.pth"]))
+            if configs['dataset']=='mlrsnet':
+                    label = label.float()
             if configs['dataset']=='tallos':
                 image[image>3e38] = 0.0
                 image = torch.nan_to_num(image,nan=0.0)            
@@ -572,12 +577,17 @@ def create_webdataset_loaders(
                 label[label<configs['threshold']] = 0
             if configs['dataset'] == 'treesatai' and 's1_60m' in configs['data_source']:
                 image = image[:2, :, :]
+
+            
               
             if isinstance(label, dict):
                 label = label["label"]
                 if configs["dataset"] == "rapidai4eo":
                     label[label >= configs["class_threshold"]] = 1
                     label[label < configs["class_threshold"]] = 0
+
+                if configs['dataset']=='mlrsnet':
+                    labels = labels.float()
             if configs["enforce_resize"] is not None:
                 if (
                     configs["linear_evaluation"]
@@ -838,6 +848,7 @@ def create_universal_webdataset_loader(configs):
             # Need to decide whether to share workers among datasets or split them equally
             if configs["split_workers"]:
                 current_config["num_workers"] = configs["num_workers"] // len(configs["train_datasets"])
+            
                 print(
                     "Setting up loader for dataset: ",
                     dataset,

@@ -11,13 +11,19 @@
 
 # Parameter arrays
 vit_backbones=("vit_tiny_patch16_224.augreg_in21k" "vit_small_patch16_224.augreg_in21k" "vit_base_patch16_224.augreg_in21k")
+#vit_backbones=("vit_small_patch16_224.augreg_in21k")
+#ekkremei max_len me small kai ta katw
 implementations=("topx%" "median" "max_len")
+#implementations=("median")
 mask_thresholds=(0.25 0.6 0.7 0.75 0.8 0.85)
+#mask_thresholds=(0.8)
 retain_percents=(85 50 40 25 15 5)
 
 # Fixed configuration files and seed (adjust these paths as needed)
-main_config="configs/main_configs/bigearthnet.json"
+main_config="configs/main_configs/mlrsnet.json"
+#main_config="configs/main_configs/bigearthnet.json"
 method_config="configs/method/classification/rvit.json"
+#training_config="configs/training/training_per_dataset/rvit/bigearthnet_training.json"
 training_config="configs/training/training_per_dataset/rvit/bigearthnet_training.json"
 seed=222
 
@@ -31,7 +37,6 @@ for backbone in "${vit_backbones[@]}"; do
         attn_mask=true
       else
         attn_mask=false
-        echo $attn_mask
       fi
       for mask_threshold in "${mask_thresholds[@]}"; do
         echo "Running experiment with backbone=$backbone, implementation=$impl, mask_threshold=$mask_threshold, attention_mask=$attn_mask, seed=$seed"
@@ -44,6 +49,7 @@ for backbone in "${vit_backbones[@]}"; do
                        --mask_threshold="$mask_threshold" \
                        --attention_mask="$attn_mask"
         # If python returns a non-zero exit code, the script will exit (due to set -e)
+        wait  # Ensures only one script runs at a time before continuing
       done
     elif [[ "$impl" == "topx%" ]]; then
       attn_mask=False
@@ -57,6 +63,7 @@ for backbone in "${vit_backbones[@]}"; do
                        --implementation="$impl" \
                        --retain_percent="$retain_percent" \
                        --attention_mask="$attn_mask"
+        wait
       done
     fi
   done
