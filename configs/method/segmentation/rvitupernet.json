@@ -1,0 +1,14 @@
+{
+    "architecture":"rvitupernet",
+    "backbone":"vit_base_patch16_224",
+    "pyramid_channels":256,
+    "decoder_segmentation_channels":64,
+    "pretrained":true,
+    "mask_threshold": 0.65,
+    "rvit": true,
+    "mask_in_token_space": false,
+    "implementation": "max_len",
+    "retain_percent": 0,
+    "pad_value": 0.0,
+    "attention_mask": true,
+}

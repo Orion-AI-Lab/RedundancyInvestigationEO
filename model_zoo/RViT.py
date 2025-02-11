@@ -8,7 +8,7 @@ import einops
 import wandb
 
 class RViT(nn.Module):
-    def __init__(self, num_classes, backbone, image_size, num_channels, pretrained=True, mask_threshold=0.9,mask_in_token_space=True, implementation="max_len", pad_value=0.0, retain_percent=0,attention_mask=False):
+    def __init__(self, num_classes, backbone, image_size, num_channels, pretrained=True, mask_threshold=0.9,mask_in_token_space=True, implementation="max_len", pad_value=0.0, retain_percent=0,attention_mask=False, hierarchical_features=False):
         """
         Initialize the RViT model.
 
@@ -31,6 +31,8 @@ class RViT(nn.Module):
         self.attention_mask = attention_mask
         self.implementation = implementation
         self.backbone = backbone
+        self.hierarchical_features = hierarchical_features
+        
 
         if not self.attention_mask:
             self.model = timm.create_model(backbone,in_chans = num_channels, num_classes=num_classes, img_size=image_size, dynamic_img_pad=True, dynamic_img_size=True,pretrained=pretrained)
@@ -42,8 +44,16 @@ class RViT(nn.Module):
                                 "Change the attention_mask to False or the implementation to max_len")
 
             self.model = timm.create_model(backbone, img_size=image_size, num_classes=num_classes, dynamic_img_pad=True, dynamic_img_size=True, in_chans=num_channels, pretrained=pretrained)
-         # Ensure padding implementation is provided
         
+        # Ensure padding implementation is provided
+        self.num_blocks = len(self.model.blocks) 
+        if self.hierarchical_features:
+            # Dynamically divide blocks into stages
+            self.stage1_blocks = self.model.blocks[:self.num_blocks // 4]
+            self.stage2_blocks = self.model.blocks[self.num_blocks // 4:self.num_blocks // 2]
+            self.stage3_blocks = self.model.blocks[self.num_blocks // 2:3 * self.num_blocks // 4]
+            self.stage4_blocks = self.model.blocks[3 * self.num_blocks // 4:]
+            
         if hasattr(self.model, 'MaskAttentionViT'):
             print("Initiliazing MaskAttentionViT")
             if wandb.run:
@@ -364,7 +374,7 @@ class RViT(nn.Module):
                 cls_token = cls_token.expand(x.shape[0], -1, -1)
                 x = torch.cat([cls_token, x], dim=1)
 
-        if self.training and self.attention_mask:
+        if self.training and self.attention_mask and not self.hierarchical_features:
                 cls_mask = torch.zeros((x.shape[0], 1), device=x.device, dtype=torch.bool)
                 token_attention_mask = torch.cat((cls_mask, token_attention_mask), dim=1)
 
@@ -373,14 +383,59 @@ class RViT(nn.Module):
 
         if self.training and self.attention_mask:
             token_attention_mask = token_attention_mask[:, None, None, :]  # Shape it for attention layers
-            for module in self.model.blocks:
-                x = module(x, token_attention_mask)
+            if not self.hierarchical_features:
+                for module in self.model.blocks:
+                    x = module(x, token_attention_mask)
+            else:
+                x = x[:, 1:]  # Remove CLS token
+                for block in self.stage1_blocks:
+                    features = block(x, token_attention_mask)
+                stage1 = features
+
+                # Stage 2
+                for block in self.stage2_blocks:
+                    features = block(features, token_attention_mask)
+                stage2 = features
+
+                # Stage 3
+                for block in self.stage3_blocks:
+                    features = block(features, token_attention_mask)
+                stage3 = features
+
+                # Stage 4
+                for block in self.stage4_blocks:
+                    features = block(features, token_attention_mask)
+                stage4 = features
         else:
-            x = self.model.blocks(x)
+            if not self.hierarchical_features:
+                x = self.model.blocks(x)
+            else:
+                x = x[:,:1]  # Remove CLS token
+                for block in self.stage1_blocks:
+                    features = block(x)
+                stage1 = features
+
+                # Stage 2
+                for block in self.stage2_blocks:
+                    features = block(features)
+                stage2 = features
+
+                # Stage 3
+                for block in self.stage3_blocks:
+                    features = block(features)
+                stage3 = features
+
+                # Stage 4
+                for block in self.stage4_blocks:
+                    features = block(features)
+                stage4 = features
 
         x = self.model.norm(x)
-
-        return x
+        
+        if not self.hierarchical_features:
+            return x
+        else:
+            return [stage1, stage2, stage3, stage4]
 
 
     
@@ -389,8 +444,11 @@ class RViT(nn.Module):
             x = self.forward_mask_in_token_space(x,verbose=False)
         else:
             x = self.forward_mask_in_image_space(x,verbose=False)
-
-        return self.model.forward_head(x)
+        
+        if not self.hierarchical_features:
+            return self.model.forward_head(x)
+        else:
+            return x
 
 
 if __name__ == '__main__':
