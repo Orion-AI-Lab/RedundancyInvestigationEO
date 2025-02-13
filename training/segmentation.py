@@ -11,7 +11,7 @@ import utilities.model_utilities as model_utils
 import utilities.utils as utils
 import wandb
 from utilities.model_utilities import adjust_learning_rate, get_current_learning_rate
-
+import torch.nn.functional as F
 
 def early_stopping(val_loss, best_loss, counter, patience=5):
     if val_loss < best_loss:
@@ -51,14 +51,22 @@ def train_epoch(train_loader, model, optimizer, criterion, epoch, configs, scale
             label = label.to(configs["device"])
 
             if not configs["linear_evaluation"] and not configs["fully_finetune"]:
-                out = model(image)
+                if configs['architecture']!='rvitupernet':
+                    out = model(image)
+                else:
+                    out, mask = model(image)
             else:
                 image = image[:, desired_indices, :, :]
 
                 out = model((image, spectral_keys))
 
             label = label.long()
-            loss = criterion(out, label)
+            if configs['architecture']=='rvitupernet':
+                loss = F.cross_entropy(out, label,reduction='none')
+                masked_loss = loss * mask.float()
+                loss = masked_loss.sum()/(mask.sum().clamp(min=1))
+            else:
+                loss = criterion(out, label)
         if idx % 100 == 0:
             log_dict = {"Epoch": epoch, "Iteration": idx, "train loss": loss.item()}
             if configs["wandb"]:

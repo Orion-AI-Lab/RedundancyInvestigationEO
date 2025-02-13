@@ -182,7 +182,7 @@ class RViTUPerNet(nn.Module):
         height = int(encoder.model.patch_embed.img_size[0]//encoder.model.patch_embed.patch_size[0])
         feature_size = encoder.model.patch_embed.proj.out_channels
         num_tokens = encoder.model.patch_embed.num_patches
-        
+        self.height = height
         shapes =[closest_divisible_by_2(height), closest_divisible_by_2(height//2),closest_divisible_by_2(height//4), closest_divisible_by_2(height//8) ]#height//4, height//8]
         self.shapes = shapes
 
@@ -226,7 +226,15 @@ class RViTUPerNet(nn.Module):
         # Pass the features to the UPerNet decoder
         out = self.decoder(decoder_list[0], decoder_list[1], decoder_list[2], decoder_list[3])
         out = self.segmentation_head(out)
-        return out
+        
+        if self.training:
+            #Reshape mask to patch size x patch size
+            mask = mask.view(mask.shape[0], self.height, self.height).float().unsqueeze(1)
+            #Return the mask to the original size
+            mask = F.interpolate(mask, size=(out.shape[2], out.shape[3]), mode="nearest").squeeze()
+            return out, mask.bool()
+        else:
+            return out
 
 
 
