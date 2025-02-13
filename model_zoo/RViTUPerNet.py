@@ -212,13 +212,17 @@ class RViTUPerNet(nn.Module):
 
     def forward(self, x):
         # Extract multi-scale features from the encoder
-        features, mask = self.encoder(x)     
+        features, mask = self.encoder(x)    
+         
         height = width = 0
         decoder_list = []
         for f in range(len(features)):
             height = width = self.shapes[f]
-            decoder_tokens = torch.zeros((features[f].shape[0],mask.shape[1],features[f].shape[2]),device=features[f].device)
-            decoder_tokens = decoder_tokens.masked_scatter(mask.unsqueeze(-1),features[f])
+            if self.training:
+                decoder_tokens = torch.zeros((features[f].shape[0],mask.shape[1],features[f].shape[2]),device=features[f].device)
+                decoder_tokens = decoder_tokens.masked_scatter(mask.unsqueeze(-1),features[f])
+            else:
+                decoder_tokens = features[f]
             decoder_tokens = decoder_tokens.permute(0, 2, 1).contiguous().view(decoder_tokens.shape[0],-1, height, width)
             decoder_tokens = self.proj[f](decoder_tokens)
             decoder_list.append(decoder_tokens)
