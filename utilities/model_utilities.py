@@ -8,7 +8,7 @@ import torch.nn as nn
 from torchsummary import summary
 import einops
 from timm.models.layers import PatchEmbed
-from model_zoo import multimodal_mae, segformer, upernet, pointnet, pointnet2, point_transformer, RViT
+from model_zoo import multimodal_mae, segformer, upernet, pointnet, pointnet2, point_transformer, RViT, RViTUPerNet
 import yaml
 from pathlib import Path
 import kornia
@@ -108,6 +108,9 @@ def create_segmentor(configs):
             in_channels=configs["in_channels"],  # model input channels (1 for gray-scale images, 3 for RGB, etc.)
             classes=configs["num_classes"],  # model output channels (number of classes in your dataset)
         )
+    elif configs["architecture"].lower() == "rvitupernet":
+        backbone = RViT.RViT( num_classes=configs['num_classes'], backbone=configs['backbone'], image_size=configs["image_size"], num_channels=configs["in_channels"], pretrained=configs['pretrained'], mask_threshold=configs["mask_threshold"],mask_in_token_space=configs['mask_in_token_space'],  implementation=configs['implementation'], pad_value = configs['pad_value'], retain_percent=configs['retain_percent'], attention_mask=configs['attention_mask'],hierarchical_features=True)
+        model = RViTUPerNet.RViTUPerNet(backbone,num_classes=configs['num_classes'],decoder_segmentation_channels=configs['decoder_segmentation_channels'],pyramid_channels=configs['pyramid_channels'],activation=None, output_size=(configs['image_size'],configs['image_size']))
     elif configs["architecture"].lower() == "deeplab":
         model = smp.DeepLabV3Plus(
             encoder_name=configs["backbone"],  # choose encoder, e.g. mobilenet_v2 or efficientnet-b7
