@@ -7,8 +7,8 @@
     "mask_threshold": 0.65,
     "rvit": true,
     "mask_in_token_space": false,
-    "implementation": "max_len",
-    "retain_percent": 0,
+    "implementation": "median",
+    "retain_percent": 72,
     "pad_value": 0.0,
-    "attention_mask": true,
+    "attention_mask": false,
 }

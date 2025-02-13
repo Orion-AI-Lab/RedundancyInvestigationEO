@@ -181,18 +181,20 @@ class RViTUPerNet(nn.Module):
         #Calculate dimensions depending on image size and feature sizes
         height = int(encoder.model.patch_embed.img_size[0]//encoder.model.patch_embed.patch_size[0])
         feature_size = encoder.model.patch_embed.proj.out_channels
-        print(height)
+        num_tokens = encoder.model.patch_embed.num_patches
+        
         shapes =[closest_divisible_by_2(height), closest_divisible_by_2(height//2),closest_divisible_by_2(height//4), closest_divisible_by_2(height//8) ]#height//4, height//8]
         self.shapes = shapes
-        print(shapes)
 
-        num_tokens = encoder.model.patch_embed.num_patches
         reshaped_features = []
         #Calculate reshaped features
         for i in range(4):
             resized_tokens = shapes[i]*shapes[i]
             reshaped_features.append(int((num_tokens/resized_tokens)*feature_size))            
         
+        print(self.shapes)
+
+        print("reshaped features: ",reshaped_features)
         self.proj1 =  nn.Conv2d(reshaped_features[0], model_channels[encoder.backbone][0], kernel_size=1, stride=1, padding=0)
         self.proj2 = nn.Conv2d(reshaped_features[1], model_channels[encoder.backbone][1], kernel_size=1, stride=1, padding=0)
         self.proj3 = nn.Conv2d(reshaped_features[2], model_channels[encoder.backbone][2], kernel_size=1, stride=1, padding=0)
@@ -210,17 +212,19 @@ class RViTUPerNet(nn.Module):
 
     def forward(self, x):
         # Extract multi-scale features from the encoder
-        print(x.shape)
-        features = self.encoder(x)
+        features, mask = self.encoder(x)     
         height = width = 0
+        decoder_list = []
         for f in range(len(features)):
             height = width = self.shapes[f]
-            print(features[f].shape)
-
-            features[f] = features[f].permute(0, 2, 1).contiguous().view(features[f].shape[0],-1, height, width)
-            features[f] = self.proj[f](features[f])
+            decoder_tokens = torch.zeros((features[f].shape[0],mask.shape[1],features[f].shape[2]),device=features[f].device)
+            decoder_tokens = decoder_tokens.masked_scatter(mask.unsqueeze(-1),features[f])
+            decoder_tokens = decoder_tokens.permute(0, 2, 1).contiguous().view(decoder_tokens.shape[0],-1, height, width)
+            decoder_tokens = self.proj[f](decoder_tokens)
+            decoder_list.append(decoder_tokens)
+        
         # Pass the features to the UPerNet decoder
-        out = self.decoder(features[0], features[1], features[2], features[3])
+        out = self.decoder(decoder_list[0], decoder_list[1], decoder_list[2], decoder_list[3])
         out = self.segmentation_head(out)
         return out
 
@@ -228,12 +232,13 @@ class RViTUPerNet(nn.Module):
 
 if __name__ == '__main__':
     img_size=512
-    model = RViT(num_classes=14, backbone='vit_base_patch16_224', image_size=img_size, num_channels=14, mask_threshold=0.9, mask_in_token_space=False, implementation="max_len", pad_value = 0.0, retain_percent=60, attention_mask=True,hierarchical_features=True)
+    model = RViT(num_classes=14, backbone='vit_base_patch16_224', image_size=img_size, num_channels=14, mask_threshold=0.5, mask_in_token_space=False, implementation="topx%", pad_value = 0.0, retain_percent=60, attention_mask=False,hierarchical_features=True)
     up = RViTUPerNet(model,num_classes=14,decoder_segmentation_channels=64,pyramid_channels=256,activation=None, output_size=(img_size,img_size))
-    image = torch.randn(2, 14, img_size, img_size)
+    image = torch.randn(12, 14, img_size, img_size)
     #Get predictions
     predictions = up(image)
     print(predictions.shape)
     #Get classes via argmax
+    
     predictions = torch.argmax(predictions, dim=1)
     print(predictions)

@@ -263,6 +263,7 @@ class RViT(nn.Module):
         Mask patches based on cosine similarity and retain the most important ones.
         Masked patches are replaced with padding.
         """
+        hierarchical_mask = None
         if self.training and self.mask_threshold < 1.0 and self.retain_percent < 100:
             patch_size = self.model.patch_embed.patch_size[0]
 
@@ -300,8 +301,13 @@ class RViT(nn.Module):
                 k = keep_indices.shape[1]  # Number of patches to retain
                 # Gather selected patches
                 batch_indices = torch.arange(x.shape[0], device=x.device).unsqueeze(-1).expand(-1, k)
+                orig_shape = x.shape
                 x = x[batch_indices, keep_indices]  # Efficient batch gather
+                hierarchical_mask = torch.zeros(orig_shape[:-1], dtype=torch.bool,device=x.device)
+                batch_indices = torch.arange(keep_indices.size(0), device=keep_mask.device).unsqueeze(-1)
 
+                # Set the top indices to True
+                hierarchical_mask[batch_indices, keep_indices] = True
                 if verbose:
                     print(f"Cos sim shape: {cos_sim.shape}, Selected indices: {keep_indices.shape}, Output shape: {x.shape}")
 
@@ -328,7 +334,8 @@ class RViT(nn.Module):
 
                 x = padded_x  # Update x with masked patches
               
-
+                hierarchical_mask = keep_mask
+                
                 if self.attention_mask:
                     token_attention_mask = torch.zeros((x.shape[0], max_len), dtype=torch.bool, device=x.device)
                     token_attention_mask[~mask[:, :max_len]] = True  # True for masked-out tokens
@@ -344,7 +351,7 @@ class RViT(nn.Module):
             if self.training and self.mask_threshold<1.0:
 
                 keep_mask = keep_mask[:, :total_patches]  # Ensure matching shape     
-            #Mask based on similarity
+                #Mask based on similarity
                 retained_tokens = [x[i, keep_mask[i]] for i in range(x.shape[0])]
                 
                 #Get median length
@@ -354,9 +361,14 @@ class RViT(nn.Module):
                 #Calc topk indices
                 topk_indices = self.get_topk_indices(cos_sim,median_len)
                 batch_indices = torch.arange(x.shape[0], device=x.device)[:, None]
-
+                
                 x = x[batch_indices,topk_indices]
+                hierarchical_mask = torch.zeros_like(keep_mask, dtype=torch.bool,device=x.device)
+                batch_indices = torch.arange(topk_indices.size(0), device=keep_mask.device).unsqueeze(-1)
 
+                # Set the top indices to True
+                hierarchical_mask[batch_indices, topk_indices] = True
+                
                 if verbose:
                     print(f"Cos sim shape: {cos_sim.shape}, Mask shape: {keep_mask.shape}, Unmasked shape: {x.shape}, Median length: {median_len}")
 
@@ -388,6 +400,7 @@ class RViT(nn.Module):
                     x = module(x, token_attention_mask)
             else:
                 x = x[:, 1:]  # Remove CLS token
+                
                 for block in self.stage1_blocks:
                     features = block(x, token_attention_mask)
                 stage1 = features
@@ -406,11 +419,12 @@ class RViT(nn.Module):
                 for block in self.stage4_blocks:
                     features = block(features, token_attention_mask)
                 stage4 = features
+                x = features
         else:
             if not self.hierarchical_features:
                 x = self.model.blocks(x)
             else:
-                x = x[:,:1]  # Remove CLS token
+                x = x[:,1:]  # Remove CLS token
                 for block in self.stage1_blocks:
                     features = block(x)
                 stage1 = features
@@ -429,13 +443,14 @@ class RViT(nn.Module):
                 for block in self.stage4_blocks:
                     features = block(features)
                 stage4 = features
+                x = features
 
         x = self.model.norm(x)
         
         if not self.hierarchical_features:
-            return x
+            return x, None
         else:
-            return [stage1, stage2, stage3, stage4]
+            return [stage1, stage2, stage3, stage4], hierarchical_mask
 
 
     
@@ -443,12 +458,12 @@ class RViT(nn.Module):
         if self.mask_in_token_space:
             x = self.forward_mask_in_token_space(x,verbose=False)
         else:
-            x = self.forward_mask_in_image_space(x,verbose=False)
+            x, hiearchical_mask = self.forward_mask_in_image_space(x,verbose=False)
         
         if not self.hierarchical_features:
             return self.model.forward_head(x)
         else:
-            return x
+            return x, hiearchical_mask
 
 
 if __name__ == '__main__':
