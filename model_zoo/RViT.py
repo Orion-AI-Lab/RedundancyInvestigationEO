@@ -6,6 +6,8 @@ from torch import nn
 import torch.nn.functional as F
 import einops
 import wandb
+import numpy as np
+import matplotlib.pyplot as plt
 
 class RViT(nn.Module):
     def __init__(self, num_classes, backbone, image_size, num_channels, pretrained=True, mask_threshold=0.9,mask_in_token_space=True, implementation="max_len", pad_value=0.0, retain_percent=0,attention_mask=False, hierarchical_features=False):
@@ -32,20 +34,21 @@ class RViT(nn.Module):
         self.implementation = implementation
         self.backbone = backbone
         self.hierarchical_features = hierarchical_features
-        
+        self.plot_img = True
+        self.plot_cnt = 0
 
         if not self.attention_mask:
             self.model = timm.create_model(backbone,in_chans = num_channels, num_classes=num_classes, img_size=image_size, dynamic_img_pad=True, dynamic_img_size=True,pretrained=pretrained)
         else:
             from model_zoo import MaskAttentionViT as MaskAttentionViT
 
-            if self.implementation in ["median", "topx%", "vit"]:
+            if self.implementation in ["median", "topx%", "vit", "random_topx%"]:
                 raise ValueError("Invalid arguments. "
                                 "Change the attention_mask to False or the implementation to max_len")
 
             self.model = timm.create_model(backbone, img_size=image_size, num_classes=num_classes, dynamic_img_pad=True, dynamic_img_size=True, in_chans=num_channels, pretrained=pretrained)
         
-        # Ensure padding implementation is provided
+        #Ensure padding implementation is provided
         self.num_blocks = len(self.model.blocks) 
         if self.hierarchical_features:
             # Dynamically divide blocks into stages
@@ -61,11 +64,11 @@ class RViT(nn.Module):
             if not self.attention_mask:
                 raise ValueError("MaskAttentionViT requires attention_mask=True")
               
-        if self.implementation not in ["median", "max_len", "topx%", "vit"]:
+        if self.implementation not in ["median", "max_len", "topx%", "vit", "random_topx%"]:
             raise ValueError("Invalid or missing `implementation`. "
-                                "Choose from: [median, max_len, topx%, vit]")
+                                "Choose from: [median, max_len, topx%, vit, random_topx%]")
         
-        if self.implementation == "topx%" and (self.retain_percent <= 0 or self.retain_percent >= 100):
+        if (self.implementation == "topx%" or self.implementation == "random_topx%") and (self.retain_percent <= 0 or self.retain_percent >= 100):
             raise ValueError("Value of retain_percent must be greater than 0 and lower than 100 for topx% implementation.")
         
 
@@ -258,11 +261,27 @@ class RViT(nn.Module):
         tok_k_indices = torch.topk(-mean_similarities, k, dim=1).indices
         return tok_k_indices
     
-    def forward_mask_in_image_space(self, x, verbose=False):
+    def get_random_topk_indices(self, cos_sim, k):
+        """ Selects k random token indices for each sample in the batch.
+
+        Args:
+            cos_sim: A tensor of shape (batch, num_tokens, num_tokens)
+            k: The number of tokens to select randomly.
+        Returns:
+            A tensor of shape (batch, k) containing k random indices for each sample.
+        """
+        batch_size, num_tokens, _ = cos_sim.shape
+        rand_indices = torch.stack([torch.randperm(num_tokens)[:k] for _ in range(batch_size)])
+        return rand_indices
+    
+    def forward_mask_in_image_space(self, x, label=None,verbose=False): 
+    #def forward_mask_in_image_space(self, x, verbose=False):
         """
         Mask patches based on cosine similarity and retain the most important ones.
         Masked patches are replaced with padding.
         """
+        raw_input = x.clone()
+
         hierarchical_mask = None
         if self.training and self.mask_threshold < 1.0 and self.retain_percent < 100:
             patch_size = self.model.patch_embed.patch_size[0]
@@ -279,6 +298,10 @@ class RViT(nn.Module):
             # Get binary mask (True = keep, False = mask)
             keep_mask = self.get_mask_vectorised(cos_sim)
 
+             # Store original image dimensions for visualization
+            orig_H, orig_W = H + pad_h, W + pad_w
+            num_patches_h, num_patches_w = orig_H // patch_size, orig_W // patch_size
+
         # Extract actual token embeddings
         x = self.model.patch_embed(x)
         x = self.model._pos_embed(x)
@@ -290,6 +313,9 @@ class RViT(nn.Module):
             cls_token, x = x[:, :1, :], x[:, 1:]  # Separate CLS token
 
         total_patches = x.shape[1]  # Exclude CLS token count
+
+        # Store the final mask and indices for visualization
+        final_mask = torch.zeros(x.shape[0], total_patches, dtype=torch.bool, device=x.device)
         
         #3 Options: 1st-topx%, 2nd-median, 3rd-max_len
         if self.implementation == "topx%":
@@ -305,15 +331,41 @@ class RViT(nn.Module):
                 x = x[batch_indices, keep_indices]  # Efficient batch gather
                 hierarchical_mask = torch.zeros(orig_shape[:-1], dtype=torch.bool,device=x.device)
                 batch_indices = torch.arange(keep_indices.size(0), device=keep_mask.device).unsqueeze(-1)
+                
 
                 # Set the top indices to True
                 hierarchical_mask[batch_indices, keep_indices] = True
+                final_mask[batch_indices, keep_indices] = True
+
                 if verbose:
                     print(f"Cos sim shape: {cos_sim.shape}, Selected indices: {keep_indices.shape}, Output shape: {x.shape}")
 
                 if wandb.run:
                     wandb.log({"unmasked_patches_ratio": k / total_patches})
-                #print("topx%", k, self.retain_percent)
+        
+        elif self.implementation == "random_topx%":
+
+            if self.training and self.retain_percent < 100:
+                # Get random top-k indices
+                keep_indices = self.get_random_topk_indices(cos_sim, int(cos_sim.shape[1] * (self.retain_percent / 100)))
+                # Ensure we select the same number of patches across all samples
+                k = keep_indices.shape[1]
+                # Gather selected patches
+                batch_indices = torch.arange(x.shape[0], device=x.device).unsqueeze(-1).expand(-1, k)
+                orig_shape = x.shape
+                x = x[batch_indices, keep_indices]  # Efficient batch gather
+                hierarchical_mask = torch.zeros(orig_shape[:-1], dtype=torch.bool, device=x.device)
+                batch_indices = torch.arange(keep_indices.size(0), device=x.device).unsqueeze(-1)
+                
+                # Set the top indices to True
+                hierarchical_mask[batch_indices, keep_indices] = True
+                final_mask[batch_indices, keep_indices] = True
+
+                if verbose:
+                    print(f"Cos sim shape: {cos_sim.shape}, Selected indices: {keep_indices.shape}, Output shape: {x.shape}")
+
+                if wandb.run:
+                    wandb.log({"unmasked_patches_ratio": k / orig_shape[1]})
 
         elif self.implementation == "max_len":
             if self.training and self.mask_threshold < 1.0:
@@ -335,6 +387,7 @@ class RViT(nn.Module):
                 x = padded_x  # Update x with masked patches
               
                 hierarchical_mask = keep_mask
+                final_mask = keep_mask
                 
                 if self.attention_mask:
                     token_attention_mask = torch.zeros((x.shape[0], max_len), dtype=torch.bool, device=x.device)
@@ -368,6 +421,7 @@ class RViT(nn.Module):
 
                 # Set the top indices to True
                 hierarchical_mask[batch_indices, topk_indices] = True
+                final_mask[batch_indices, topk_indices] = True
                 
                 if verbose:
                     print(f"Cos sim shape: {cos_sim.shape}, Mask shape: {keep_mask.shape}, Unmasked shape: {x.shape}, Median length: {median_len}")
@@ -393,6 +447,16 @@ class RViT(nn.Module):
         # Forward through the model
         x = self.model.norm_pre(x)
 
+        """
+        if self.training and self.attention_mask:
+            token_attention_mask = token_attention_mask[:, None, None, :]  # Shape it for attention layers
+            for module in self.model.blocks:
+                x = module(x, token_attention_mask)
+        else:
+            x = self.model.blocks(x)
+        """
+
+        
         if self.training and self.attention_mask:
             token_attention_mask = token_attention_mask[:, None, None, :]  # Shape it for attention layers
             if not self.hierarchical_features:
@@ -447,18 +511,90 @@ class RViT(nn.Module):
 
         x = self.model.norm(x)
         
+
+ # -------------------- Plotting Section --------------------
+        
+
+        if self.plot_img and self.training and self.plot_cnt < 10:
+            self.plot_cnt += 1
+            raw_label = label[0].cpu().detach().numpy()
+        # Convert raw input to CPU numpy array
+            raw_img = raw_input[0].detach().cpu().numpy()  # take first sample
+            if raw_img.shape[0] > 3:
+                raw_img = raw_img[:3, :, :]
+            raw_img = (raw_img - raw_img.min()) / (raw_img.max() - raw_img.min() + 1e-8)
+            raw_img = raw_img.transpose(1, 2, 0)
+
+            # Create masked image with patches in original positions
+            masked_img = np.zeros_like(raw_img)
+            masked_label = np.zeros_like(raw_label)
+            patch_mask = hierarchical_mask[0].cpu().numpy()  # Use first sample's mask
+            patch_mask = final_mask[0].cpu().numpy()  # Use first sample's mask
+
+            for idx in range(total_patches):
+                h_idx = idx // num_patches_w
+                w_idx = idx % num_patches_w
+                
+                h_start = h_idx * patch_size
+                h_end = (h_idx + 1) * patch_size
+                w_start = w_idx * patch_size
+                w_end = (w_idx + 1) * patch_size
+                
+                if patch_mask[idx]:
+                    # Keep original patch
+                    masked_img[h_start:h_end, w_start:w_end] = raw_img[h_start:h_end, w_start:w_end]
+                    masked_label[h_start:h_end, w_start:w_end] = raw_label[h_start:h_end, w_start:w_end]
+                else:
+                    # Black out masked patches
+                    masked_img[h_start:h_end, w_start:w_end] = 0.0  # Use black for masked patches
+                    masked_label[h_start:h_end, w_start:w_end] = 0.0  # Use black for masked patches
+
+            # Plot side by side
+            fig, axes = plt.subplots(1, 3, figsize=(12, 6))
+            axes[0].imshow(raw_img)
+            axes[0].set_title("Raw Input")
+            axes[0].axis("off")
+            
+            axes[1].imshow(masked_img)
+            axes[1].set_title(f"Masked Image ({self.implementation})")
+            axes[1].axis("off")
+            
+            if self.hierarchical_features:
+                axes[2].imshow(masked_label)
+                axes[2].set_title(f"Masked Label ({self.implementation})")
+                axes[2].axis("off")
+                plt.tight_layout()
+            #plt.savefig(f"masked_vs_raw_{self.implementation}.png", dpi=300)
+            plt.close()
+
+            if wandb.run:
+                wandb.log({
+                    "Masked vs Raw": wandb.Image(fig),
+                    "Retained Patches": patch_mask.sum() / total_patches
+                })
+        #return x
+
         if not self.hierarchical_features:
             return x, None
         else:
             return [stage1, stage2, stage3, stage4], hierarchical_mask
 
-
-    
+    """
     def forward(self, x):
         if self.mask_in_token_space:
             x = self.forward_mask_in_token_space(x,verbose=False)
         else:
-            x, hiearchical_mask = self.forward_mask_in_image_space(x,verbose=False)
+            x = self.forward_mask_in_image_space(x,verbose=False)
+
+        return self.model.forward_head(x)
+    """
+    
+    #SEGMENTATION
+    def forward(self, x,label=None):
+        if self.mask_in_token_space:
+            x = self.forward_mask_in_token_space(x,verbose=False)
+        else:
+            x, hiearchical_mask = self.forward_mask_in_image_space(x,label,verbose=False)
         
         if not self.hierarchical_features:
             return self.model.forward_head(x)
