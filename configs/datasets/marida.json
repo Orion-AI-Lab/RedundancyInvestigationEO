@@ -1,0 +1,10 @@
+{
+    "root_path":"/mnt/shared_storage/EODatasets/Marida",
+    "task":"segmentation",
+    "metrics":["accuracy","fscore","iou"],
+    "multilabel":false,
+    "num_classes":12,
+    "in_channels":11,
+    "image_size":256,
+    "meta_information":""
+}

@@ -422,6 +422,9 @@ def create_webdataset_loaders(
         for sample in src:
             image = torch.load(io.BytesIO(sample["image.pth"])).float()
             label = torch.load(io.BytesIO(sample["labels.pth"]))
+            if configs['dataset']=='marida':
+                image = einops.rearrange(image, "h w c-> c h w")
+                label[label==-1] = 11
             if configs['dataset']=='mlrsnet':
                     label = label.float()
             if configs['dataset']=='sen12ms':
@@ -565,6 +568,9 @@ def create_webdataset_loaders(
         for sample in src:
             image = torch.load(io.BytesIO(sample["image.pth"])).float()
             label = torch.load(io.BytesIO(sample["labels.pth"]))
+            if configs['dataset']=='marida':
+                image = einops.rearrange(image, "h w c-> c h w")
+                label[label==-1] = 11
             if configs['dataset']=='mlrsnet':
                     label = label.float()
             if configs['dataset']=='tallos':
