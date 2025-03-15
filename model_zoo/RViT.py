@@ -68,7 +68,7 @@ class RViT(nn.Module):
             raise ValueError("Invalid or missing `implementation`. "
                                 "Choose from: [median, max_len, topx%, vit, random_topx%]")
         
-        if (self.implementation == "topx%" or self.implementation == "random_topx%") and (self.retain_percent <= 0 or self.retain_percent >= 100):
+        if (self.implementation == "topx%" or self.implementation == "random_topx%") and (self.retain_percent <= 0 or self.retain_percent > 100):
             raise ValueError("Value of retain_percent must be greater than 0 and lower than 100 for topx% implementation.")
         
 
@@ -274,6 +274,68 @@ class RViT(nn.Module):
         rand_indices = torch.stack([torch.randperm(num_tokens)[:k] for _ in range(batch_size)])
         return rand_indices
     
+    def visualization_input(self, raw_input, raw_label, mask, hier_mask, patch_size, num_patches_w, total_patches):
+    #Convert raw input to CPU numpy array
+        raw_img = raw_input[0].detach().cpu().numpy()  # take first sample
+        if raw_img.shape[0] > 3:
+            raw_img = raw_img[:3, :, :]
+        raw_img = (raw_img - raw_img.min()) / (raw_img.max() - raw_img.min() + 1e-8)
+        raw_img = raw_img.transpose(1, 2, 0)
+
+        # Create masked image with patches in original positions
+        masked_img = np.zeros_like(raw_img)
+        masked_label = np.zeros_like(raw_label)
+        patch_label_mask = hier_mask[0].cpu().numpy()  # Use first sample's mask
+        patch_mask = mask[0].cpu().numpy()  # Use first sample's mask
+
+        for idx in range(total_patches):
+            h_idx = idx // num_patches_w
+            w_idx = idx % num_patches_w
+            
+            h_start = h_idx * patch_size
+            h_end = (h_idx + 1) * patch_size
+            w_start = w_idx * patch_size
+            w_end = (w_idx + 1) * patch_size
+            
+            if patch_mask[idx]:
+                # Keep original patch
+                masked_img[h_start:h_end, w_start:w_end] = raw_img[h_start:h_end, w_start:w_end]
+                masked_label[h_start:h_end, w_start:w_end] = raw_label[h_start:h_end, w_start:w_end]
+            else:
+                # Black out masked patches
+                masked_img[h_start:h_end, w_start:w_end] = 0.0  # Use black for masked patches
+                masked_label[h_start:h_end, w_start:w_end] = -1.0  # Use black for masked patches
+                        
+        # Plot side by side
+        #fig, axes = plt.subplots(1, 3, figsize=(12, 6))
+        fig, axes = plt.subplots(1, 4, figsize=(16, 6))
+        axes[0].imshow(raw_img)
+        axes[0].set_title("Raw Input")
+        axes[0].axis("off")
+        
+        axes[1].imshow(masked_img)
+        axes[1].set_title(f"Masked Image ({self.implementation})")
+        axes[1].axis("off")
+        
+        if self.hierarchical_features:
+            axes[2].imshow(raw_label)
+            axes[2].set_title(f"Raw Label ({self.implementation})")
+            axes[2].axis("off")
+
+            axes[3].imshow(masked_label)
+            axes[3].set_title(f"Masked Label ({self.implementation})")
+            axes[3].axis("off")
+
+            plt.tight_layout()
+        #plt.savefig(f"masked_vs_raw_{self.implementation}.png", dpi=300)
+        plt.close()
+
+        if wandb.run:
+            wandb.log({
+                "Raw vs Masked vs Raw Label vs Masked Label": wandb.Image(fig),
+                #"Retained Patches": patch_mask.sum() / total_patches
+            })
+    
     def forward_mask_in_image_space(self, x, label=None,verbose=False): 
     #def forward_mask_in_image_space(self, x, verbose=False):
         """
@@ -283,7 +345,8 @@ class RViT(nn.Module):
         raw_input = x.clone()
 
         hierarchical_mask = None
-        if self.training and self.mask_threshold < 1.0 and self.retain_percent < 100:
+        
+        if self.training and self.mask_threshold < 1.0 and self.retain_percent <= 100:
             patch_size = self.model.patch_embed.patch_size[0]
 
             # Ensure input dimensions are multiples of patch size
@@ -314,13 +377,16 @@ class RViT(nn.Module):
 
         total_patches = x.shape[1]  # Exclude CLS token count
 
-        # Store the final mask and indices for visualization
+
         final_mask = torch.zeros(x.shape[0], total_patches, dtype=torch.bool, device=x.device)
-        
+
+       # if self.training:
+            #final_mask = mask.clone()
+
         #3 Options: 1st-topx%, 2nd-median, 3rd-max_len
         if self.implementation == "topx%":
          
-            if self.training and self.retain_percent < 100:
+            if self.training and self.retain_percent <= 100:
                 # Get top-k indices (ensures fixed-size output)
                 keep_indices = self.get_topk_indices(cos_sim, int(cos_sim.shape[1] * (self.retain_percent / 100)))
                 # Ensure we select the same number of patches across all samples
@@ -345,7 +411,7 @@ class RViT(nn.Module):
         
         elif self.implementation == "random_topx%":
 
-            if self.training and self.retain_percent < 100:
+            if self.training and self.retain_percent <= 100:
                 # Get random top-k indices
                 keep_indices = self.get_random_topk_indices(cos_sim, int(cos_sim.shape[1] * (self.retain_percent / 100)))
                 # Ensure we select the same number of patches across all samples
@@ -353,13 +419,15 @@ class RViT(nn.Module):
                 # Gather selected patches
                 batch_indices = torch.arange(x.shape[0], device=x.device).unsqueeze(-1).expand(-1, k)
                 orig_shape = x.shape
+                #print(orig_shape)
                 x = x[batch_indices, keep_indices]  # Efficient batch gather
                 hierarchical_mask = torch.zeros(orig_shape[:-1], dtype=torch.bool, device=x.device)
+                #print(hierarchical_mask.shape)
                 batch_indices = torch.arange(keep_indices.size(0), device=x.device).unsqueeze(-1)
                 
                 # Set the top indices to True
                 hierarchical_mask[batch_indices, keep_indices] = True
-                final_mask[batch_indices, keep_indices] = True
+                final_mask[batch_indices, keep_indices] = True  
 
                 if verbose:
                     print(f"Cos sim shape: {cos_sim.shape}, Selected indices: {keep_indices.shape}, Output shape: {x.shape}")
@@ -401,7 +469,7 @@ class RViT(nn.Module):
 
 
         elif self.implementation == "median":
-            if self.training and self.mask_threshold<1.0:
+            if self.training and self.mask_threshold < 1.0:
 
                 keep_mask = keep_mask[:, :total_patches]  # Ensure matching shape     
                 #Mask based on similarity
@@ -421,7 +489,7 @@ class RViT(nn.Module):
 
                 # Set the top indices to True
                 hierarchical_mask[batch_indices, topk_indices] = True
-                final_mask[batch_indices, topk_indices] = True
+                final_mask[batch_indices, topk_indices] = True   
                 
                 if verbose:
                     print(f"Cos sim shape: {cos_sim.shape}, Mask shape: {keep_mask.shape}, Unmasked shape: {x.shape}, Median length: {median_len}")
@@ -434,12 +502,14 @@ class RViT(nn.Module):
                 if wandb.run:
                     wandb.log({"total_patches": total_patches})
 
-        
         # Re-add CLS token if necessary
         if self.model.global_pool == 'token':
                 cls_token = cls_token.expand(x.shape[0], -1, -1)
                 x = torch.cat([cls_token, x], dim=1)
+    
+  
 
+        # Remove CLS token
         if self.training and self.attention_mask and not self.hierarchical_features:
                 cls_mask = torch.zeros((x.shape[0], 1), device=x.device, dtype=torch.bool)
                 token_attention_mask = torch.cat((cls_mask, token_attention_mask), dim=1)
@@ -511,13 +581,29 @@ class RViT(nn.Module):
 
         x = self.model.norm(x)
         
-
- # -------------------- Plotting Section --------------------
-        
-
         if self.plot_img and self.training and self.plot_cnt < 10:
             self.plot_cnt += 1
             raw_label = label[0].cpu().detach().numpy()
+            #self.visualization_input(raw_input, raw_label, final_mask, hierarchical_mask, patch_size, num_patches_w, total_patches)
+        
+
+        
+ # -------------------- Plotting Section --------------------)
+        """
+        if self.plot_img and self.training and self.plot_cnt < 10:
+            self.plot_cnt += 1
+            raw_label = label[0].cpu().detach().numpy()
+
+            # Get model prediction - using the output that's already computed
+            # For segmentation models, the output 'x' should contain the predictions
+            # If hierarchical_features is True, x is a list of features from different stages
+            #if self.hierarchical_features:
+                # Assuming last item in the list is the final prediction or feature map
+             #   pred = x[-1][0].detach().cpu().numpy()  # Taking the first sample in batch
+            #else:
+                # Regular output - take the first sample from batch
+            pred = x[0].detach().cpu().numpy()
+            print(pred.shape)
         # Convert raw input to CPU numpy array
             raw_img = raw_input[0].detach().cpu().numpy()  # take first sample
             if raw_img.shape[0] > 3:
@@ -528,7 +614,7 @@ class RViT(nn.Module):
             # Create masked image with patches in original positions
             masked_img = np.zeros_like(raw_img)
             masked_label = np.zeros_like(raw_label)
-            patch_mask = hierarchical_mask[0].cpu().numpy()  # Use first sample's mask
+            #patch_label_mask = hierarchical_mask[0].cpu().numpy()  # Use first sample's mask
             patch_mask = final_mask[0].cpu().numpy()  # Use first sample's mask
 
             for idx in range(total_patches):
@@ -547,10 +633,24 @@ class RViT(nn.Module):
                 else:
                     # Black out masked patches
                     masked_img[h_start:h_end, w_start:w_end] = 0.0  # Use black for masked patches
-                    masked_label[h_start:h_end, w_start:w_end] = 0.0  # Use black for masked patches
+                    masked_label[h_start:h_end, w_start:w_end] = -1.0  # Use black for masked patches
 
+            # Format the prediction for visualization
+            # This might need adjustment based on your model's actual output format
+            #if len(pred.shape) > 2:  # If prediction has multiple channels
+            pred_vis = np.argmax(pred, axis=0)  # Get class indices for segmentation mask
+            #else:
+                #pred_vis = pred  # Already in the right format
+            
+            # Normalize prediction values for visualization
+            # if pred_vis.max() > 0:  # Only normalize if there are non-zero values
+            #    pred_vis = (pred_vis - pred_vis.min()) / (pred_vis.max() - pred_vis.min() + 1e-8)
+                    
+            
+            
             # Plot side by side
-            fig, axes = plt.subplots(1, 3, figsize=(12, 6))
+            #fig, axes = plt.subplots(1, 3, figsize=(12, 6))
+            fig, axes = plt.subplots(1, 4, figsize=(16, 6))
             axes[0].imshow(raw_img)
             axes[0].set_title("Raw Input")
             axes[0].axis("off")
@@ -563,6 +663,11 @@ class RViT(nn.Module):
                 axes[2].imshow(masked_label)
                 axes[2].set_title(f"Masked Label ({self.implementation})")
                 axes[2].axis("off")
+
+                axes[3].imshow(pred_vis)
+                axes[3].set_title(f"Model Prediction ({self.implementation})")
+                axes[3].axis("off")
+
                 plt.tight_layout()
             #plt.savefig(f"masked_vs_raw_{self.implementation}.png", dpi=300)
             plt.close()
@@ -573,13 +678,14 @@ class RViT(nn.Module):
                     "Retained Patches": patch_mask.sum() / total_patches
                 })
         #return x
-
+        """
         if not self.hierarchical_features:
-            return x, None
+            return x, None, None
         else:
-            return [stage1, stage2, stage3, stage4], hierarchical_mask
-
+            return [stage1, stage2, stage3, stage4], hierarchical_mask, final_mask
+    
     """
+            
     def forward(self, x):
         if self.mask_in_token_space:
             x = self.forward_mask_in_token_space(x,verbose=False)
@@ -588,18 +694,19 @@ class RViT(nn.Module):
 
         return self.model.forward_head(x)
     """
+
+
     
     #SEGMENTATION
-    def forward(self, x,label=None):
+    def forward(self, x, label=None):
         if self.mask_in_token_space:
             x = self.forward_mask_in_token_space(x,verbose=False)
         else:
-            x, hiearchical_mask = self.forward_mask_in_image_space(x,label,verbose=False)
-        
+            x, hiearchical_mask, final_mask = self.forward_mask_in_image_space(x,label, verbose=False)
         if not self.hierarchical_features:
             return self.model.forward_head(x)
         else:
-            return x, hiearchical_mask
+            return x, hiearchical_mask, final_mask
 
 
 if __name__ == '__main__':

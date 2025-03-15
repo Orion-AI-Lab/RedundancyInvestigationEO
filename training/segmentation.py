@@ -12,6 +12,7 @@ import utilities.utils as utils
 import wandb
 from utilities.model_utilities import adjust_learning_rate, get_current_learning_rate
 import torch.nn.functional as F
+import matplotlib.pyplot as plt
 
 def early_stopping(val_loss, best_loss, counter, patience=5):
     if val_loss < best_loss:
@@ -54,7 +55,7 @@ def train_epoch(train_loader, model, optimizer, criterion, epoch, configs, scale
                 if configs['architecture']!='rvitupernet':
                     out = model(image)
                 else:
-                    out, mask = model(image)
+                    out, mask = model(image,label)
             else:
                 image = image[:, desired_indices, :, :]
 
@@ -194,7 +195,7 @@ def test(configs, phase, model=None, loader=None, criterion=None, epoch="Test"):
                 label = label.to(configs["device"])
 
                 if not configs["linear_evaluation"] and not configs["fully_finetune"]:
-                    out = model(image)
+                    out = model(image,label)
                 else:
                     image = image[:, desired_indices, :, :]
                     out = model((image, spectral_keys))
@@ -246,4 +247,62 @@ def test(configs, phase, model=None, loader=None, criterion=None, epoch="Test"):
         wandb.log(log_dict)
     else:
         print(log_dict)
+
+    # ---------------------------
+    # Visualization using matplotlib for debugging
+    # This block will display the first sample's image, label, and prediction
+    if configs.get("debug_visualization", False) and first_image is not None:
+        # Ensure first_image is in [C, H, W] format.
+        # If it is not, try to permute it (this assumes that if channels==3 or channels==11, 
+        # the channel dimension is the last one)
+        if first_image.shape[0] not in [3, 11]:
+            # Assume shape is [H, W, C], so permute it to [C, H, W]
+            first_image = first_image.permute(2, 0, 1)
+
+        # Use denormalizer only for the channels you intend to visualize (first 3 channels)
+        if configs["normalization"] == "standard":
+            # Extract only the first three values from the mean and std
+            denorm_mean = torch.tensor(configs["mean"])[:3]
+            denorm_std = torch.tensor(configs["std"])[:3]
+            # Extract the first three channels from the image for visualization
+            img_to_denorm = first_image[:3, :, :].unsqueeze(0)  # shape: [1, 3, H, W]
+            denormalizer = kornia.enhance.Denormalize(denorm_mean, denorm_std)
+            first_img_denorm = denormalizer(img_to_denorm).squeeze(0)
+            # Permute to H, W, C for display and scale to [0, 255]
+            first_img_disp = first_img_denorm.permute(1, 2, 0)
+            first_img_disp = first_img_disp / first_img_disp.max() * 255
+            first_img_disp = first_img_disp.detach().cpu().numpy()
+        else:
+            # If no normalization was applied, just use the first three channels.
+            first_img_disp = first_image[:3, :, :].permute(1, 2, 0).detach().cpu().numpy()
+
+        # Get ground truth and prediction as numpy arrays
+        gt_np = first_mask.detach().cpu().numpy()
+        pred_np = first_prediction.detach().cpu().numpy()
+
+        
+        fig, axes = plt.subplots(1, 3, figsize=(12, 6))
+        axes[0].imshow(first_img_disp.astype(np.uint8))
+        axes[0].set_title("Raw Input")
+        axes[0].axis("off")
+        
+        axes[1].imshow(gt_np)
+        axes[1].set_title(f"Masked Image")
+        axes[1].axis("off")
+
+        axes[2].imshow(pred_np)
+        axes[2].set_title(f"Masked Label")
+        axes[2].axis("off")
+
+        plt.tight_layout()
+        #plt.savefig(f"masked_vs_raw_{self.implementation}.png", dpi=300)
+        plt.close()
+        
+        if wandb.run:
+            wandb.log({
+                "Raw Input vs Raw Label vs Pred Label": wandb.Image(fig),
+            })
+
+    # ---------------------------
+
     return total_loss
