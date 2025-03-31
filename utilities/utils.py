@@ -560,9 +560,9 @@ def create_webdataset_loaders(
                     l5[inverted_nomenclature_five[i]] = l5[inverted_nomenclature_five[i]] or label[i]
                 label = l5
             if not yield_dataset:
-                yield (image, label)
+                yield (image, label, sample["__key__"])
             else:
-                yield (image, label, configs["dataset"])
+                yield (image, label, sample["__key__"], configs["dataset"])
 
     def get_patches_eval(src):
         for sample in src:

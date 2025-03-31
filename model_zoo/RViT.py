@@ -8,6 +8,7 @@ import einops
 import wandb
 import numpy as np
 import matplotlib.pyplot as plt
+import hashlib
 
 class RViT(nn.Module):
     def __init__(self, num_classes, backbone, image_size, num_channels, pretrained=True, mask_threshold=0.9,mask_in_token_space=True, implementation="max_len", pad_value=0.0, retain_percent=0,attention_mask=False, hierarchical_features=False):
@@ -258,10 +259,15 @@ class RViT(nn.Module):
         mask = ~torch.eye(cos_sim.shape[1], dtype=bool, device=cos_sim.device)
         masked_similarities = cos_sim * mask.unsqueeze(0)
         mean_similarities = masked_similarities.sum(dim=2) / (cos_sim.shape[1] - 1)
-        tok_k_indices = torch.topk(-mean_similarities, k, dim=1).indices
+        
+        #Masking Least Similar Patches
+        #tok_k_indices = torch.topk(-mean_similarities, k, dim=1).indices
+
+        #Masking Most Similar Patches
+        tok_k_indices = torch.topk(mean_similarities, k, dim=1).indices
         return tok_k_indices
     
-    def get_random_topk_indices(self, cos_sim, k):
+    #def get_random_topk_indices(self, cos_sim, k):
         """ Selects k random token indices for each sample in the batch.
 
         Args:
@@ -273,70 +279,113 @@ class RViT(nn.Module):
         batch_size, num_tokens, _ = cos_sim.shape
         rand_indices = torch.stack([torch.randperm(num_tokens)[:k] for _ in range(batch_size)])
         return rand_indices
+
+
+    #def get_random_topk_indices(self, cos_sim, k):
+        """ Selects k random token indices for each sample in the batch,
+            ensuring the same masking across epochs.
+
+        Args:
+            cos_sim: A tensor of shape (batch, num_tokens, num_tokens)
+            k: The number of tokens to select randomly.
+        Returns:
+            A tensor of shape (batch, k) containing k random indices for each sample.
+        """
+        batch_size, num_tokens, _ = cos_sim.shape
+
+        # Generate the mask once and store it in the instance.
+        if not hasattr(self, "fixed_rand_indices") or self.fixed_rand_indices.shape[0] != batch_size:
+            torch.manual_seed(42)  # Ensures reproducibility
+            self.fixed_rand_indices = torch.stack([torch.randperm(num_tokens)[:k] for _ in range(batch_size)])
+
+        return self.fixed_rand_indices
     
-    def visualization_input(self, raw_input, raw_label, mask, hier_mask, patch_size, num_patches_w, total_patches):
-    #Convert raw input to CPU numpy array
-        raw_img = raw_input[0].detach().cpu().numpy()  # take first sample
+
+    
+
+    def get_random_topk_indices(self, cos_sim, k, keys):
+        """
+        Selects k random token indices for each sample in the batch,
+        ensuring the same masking for the same image across epochs.
+
+        Args:
+            cos_sim: A tensor of shape (batch, num_tokens, num_tokens)
+            k: The number of tokens to select randomly.
+            keys: A list of unique identifiers (from WebDataset) for each sample.
+        
+        Returns:
+            A tensor of shape (batch, k) containing k random indices for each sample.
+        """
+        batch_size, num_tokens, _ = cos_sim.shape
+        selected_indices = []
+
+        for i, key in enumerate(keys):
+            # Create a deterministic seed from the key
+            key_hash = int(hashlib.md5(key.encode()).hexdigest(), 16) % (2**32)
+            torch.manual_seed(key_hash)  # Set seed based on key
+            
+            # Generate random indices for this specific image
+            selected_indices.append(torch.randperm(num_tokens)[:k])
+
+        return torch.stack(selected_indices)
+
+
+
+    def visualization_input(self, raw_input, mask, patch_size, num_patches_w, total_patches, sample_key=None):
+        """
+        Visualize the raw input and the masked output for the first sample,
+        then log the figure to wandb.
+        This version only considers the raw image and the masked image.
+        """
+        if sample_key != 'sample074940':
+            return
+        print("yes")
+        # Convert raw input (first sample) to numpy.
+        raw_img = raw_input[0].detach().cpu().numpy()
         if raw_img.shape[0] > 3:
-            raw_img = raw_img[:3, :, :]
+            raw_img = raw_img[:3, :, :]  # Take only the first 3 channels if more.
         raw_img = (raw_img - raw_img.min()) / (raw_img.max() - raw_img.min() + 1e-8)
         raw_img = raw_img.transpose(1, 2, 0)
 
-        # Create masked image with patches in original positions
+        # Create a masked image.
         masked_img = np.zeros_like(raw_img)
-        masked_label = np.zeros_like(raw_label)
-        patch_label_mask = hier_mask[0].cpu().numpy()  # Use first sample's mask
-        patch_mask = mask[0].cpu().numpy()  # Use first sample's mask
+        patch_mask = mask[0].cpu().numpy()  # Use mask from sample 0.
 
         for idx in range(total_patches):
             h_idx = idx // num_patches_w
             w_idx = idx % num_patches_w
-            
             h_start = h_idx * patch_size
             h_end = (h_idx + 1) * patch_size
             w_start = w_idx * patch_size
             w_end = (w_idx + 1) * patch_size
-            
             if patch_mask[idx]:
-                # Keep original patch
                 masked_img[h_start:h_end, w_start:w_end] = raw_img[h_start:h_end, w_start:w_end]
-                masked_label[h_start:h_end, w_start:w_end] = raw_label[h_start:h_end, w_start:w_end]
             else:
-                # Black out masked patches
-                masked_img[h_start:h_end, w_start:w_end] = 0.0  # Use black for masked patches
-                masked_label[h_start:h_end, w_start:w_end] = -1.0  # Use black for masked patches
-                        
-        # Plot side by side
-        #fig, axes = plt.subplots(1, 3, figsize=(12, 6))
-        fig, axes = plt.subplots(1, 4, figsize=(16, 6))
+                masked_img[h_start:h_end, w_start:w_end] = 0.0  # Masked patches shown in black.
+
+        # Plot the raw and masked images side by side.
+        fig, axes = plt.subplots(1, 2, figsize=(12, 6))
         axes[0].imshow(raw_img)
         axes[0].set_title("Raw Input")
         axes[0].axis("off")
-        
         axes[1].imshow(masked_img)
         axes[1].set_title(f"Masked Image ({self.implementation})")
         axes[1].axis("off")
-        
-        if self.hierarchical_features:
-            axes[2].imshow(raw_label)
-            axes[2].set_title(f"Raw Label ({self.implementation})")
-            axes[2].axis("off")
-
-            axes[3].imshow(masked_label)
-            axes[3].set_title(f"Masked Label ({self.implementation})")
-            axes[3].axis("off")
-
-            plt.tight_layout()
-        #plt.savefig(f"masked_vs_raw_{self.implementation}.png", dpi=300)
-        plt.close()
-
+        plt.tight_layout()
         if wandb.run:
-            wandb.log({
-                "Raw vs Masked vs Raw Label vs Masked Label": wandb.Image(fig),
-                #"Retained Patches": patch_mask.sum() / total_patches
-            })
+            wandb.log({f"Masked_Sample_Image": wandb.Image(fig)})
+        plt.close(fig)
+
+    def log_masked_sample(self, raw_input, final_mask, patch_size, num_patches_w, total_patches, sample_key=None):
+        """
+        Log the visualization for sample 0 (raw and masked image) to wandb.
+        """
+        #print(sample_key)
+        self.visualization_input(raw_input, final_mask, patch_size, num_patches_w, total_patches, sample_key)
+        
     
-    def forward_mask_in_image_space(self, x, label=None,verbose=False): 
+    def forward_mask_in_image_space(self, x, keys, label=None,verbose=False): 
+        
     #def forward_mask_in_image_space(self, x, verbose=False):
         """
         Mask patches based on cosine similarity and retain the most important ones.
@@ -413,7 +462,10 @@ class RViT(nn.Module):
 
             if self.training and self.retain_percent <= 100:
                 # Get random top-k indices
-                keep_indices = self.get_random_topk_indices(cos_sim, int(cos_sim.shape[1] * (self.retain_percent / 100)))
+                #keys = [sample['__key__'] for sample in batch]  # Extract keys from WebDataset
+                keep_indices = self.get_random_topk_indices(cos_sim, int(cos_sim.shape[1] * (self.retain_percent / 100)), keys)
+
+                #keep_indices = self.get_random_topk_indices(cos_sim, int(cos_sim.shape[1] * (self.retain_percent / 100)))
                 # Ensure we select the same number of patches across all samples
                 k = keep_indices.shape[1]
                 # Gather selected patches
@@ -428,6 +480,11 @@ class RViT(nn.Module):
                 # Set the top indices to True
                 hierarchical_mask[batch_indices, keep_indices] = True
                 final_mask[batch_indices, keep_indices] = True  
+                    # Log the visualization for sample 0 (only raw and masked image).
+                if self.plot_img:
+                    self.log_masked_sample(raw_input, final_mask, patch_size, num_patches_w, total_patches, keys[0])
+
+
 
                 if verbose:
                     print(f"Cos sim shape: {cos_sim.shape}, Selected indices: {keep_indices.shape}, Output shape: {x.shape}")
@@ -581,104 +638,13 @@ class RViT(nn.Module):
 
         x = self.model.norm(x)
         
-        if self.plot_img and self.training and self.plot_cnt < 10:
-            self.plot_cnt += 1
-            raw_label = label[0].cpu().detach().numpy()
+        #if self.plot_img and self.training and self.plot_cnt < 10:
+            #self.plot_cnt += 1
+            #raw_label = label[0].cpu().detach().numpy()
             #self.visualization_input(raw_input, raw_label, final_mask, hierarchical_mask, patch_size, num_patches_w, total_patches)
-        
+
 
         
- # -------------------- Plotting Section --------------------)
-        """
-        if self.plot_img and self.training and self.plot_cnt < 10:
-            self.plot_cnt += 1
-            raw_label = label[0].cpu().detach().numpy()
-
-            # Get model prediction - using the output that's already computed
-            # For segmentation models, the output 'x' should contain the predictions
-            # If hierarchical_features is True, x is a list of features from different stages
-            #if self.hierarchical_features:
-                # Assuming last item in the list is the final prediction or feature map
-             #   pred = x[-1][0].detach().cpu().numpy()  # Taking the first sample in batch
-            #else:
-                # Regular output - take the first sample from batch
-            pred = x[0].detach().cpu().numpy()
-            print(pred.shape)
-        # Convert raw input to CPU numpy array
-            raw_img = raw_input[0].detach().cpu().numpy()  # take first sample
-            if raw_img.shape[0] > 3:
-                raw_img = raw_img[:3, :, :]
-            raw_img = (raw_img - raw_img.min()) / (raw_img.max() - raw_img.min() + 1e-8)
-            raw_img = raw_img.transpose(1, 2, 0)
-
-            # Create masked image with patches in original positions
-            masked_img = np.zeros_like(raw_img)
-            masked_label = np.zeros_like(raw_label)
-            #patch_label_mask = hierarchical_mask[0].cpu().numpy()  # Use first sample's mask
-            patch_mask = final_mask[0].cpu().numpy()  # Use first sample's mask
-
-            for idx in range(total_patches):
-                h_idx = idx // num_patches_w
-                w_idx = idx % num_patches_w
-                
-                h_start = h_idx * patch_size
-                h_end = (h_idx + 1) * patch_size
-                w_start = w_idx * patch_size
-                w_end = (w_idx + 1) * patch_size
-                
-                if patch_mask[idx]:
-                    # Keep original patch
-                    masked_img[h_start:h_end, w_start:w_end] = raw_img[h_start:h_end, w_start:w_end]
-                    masked_label[h_start:h_end, w_start:w_end] = raw_label[h_start:h_end, w_start:w_end]
-                else:
-                    # Black out masked patches
-                    masked_img[h_start:h_end, w_start:w_end] = 0.0  # Use black for masked patches
-                    masked_label[h_start:h_end, w_start:w_end] = -1.0  # Use black for masked patches
-
-            # Format the prediction for visualization
-            # This might need adjustment based on your model's actual output format
-            #if len(pred.shape) > 2:  # If prediction has multiple channels
-            pred_vis = np.argmax(pred, axis=0)  # Get class indices for segmentation mask
-            #else:
-                #pred_vis = pred  # Already in the right format
-            
-            # Normalize prediction values for visualization
-            # if pred_vis.max() > 0:  # Only normalize if there are non-zero values
-            #    pred_vis = (pred_vis - pred_vis.min()) / (pred_vis.max() - pred_vis.min() + 1e-8)
-                    
-            
-            
-            # Plot side by side
-            #fig, axes = plt.subplots(1, 3, figsize=(12, 6))
-            fig, axes = plt.subplots(1, 4, figsize=(16, 6))
-            axes[0].imshow(raw_img)
-            axes[0].set_title("Raw Input")
-            axes[0].axis("off")
-            
-            axes[1].imshow(masked_img)
-            axes[1].set_title(f"Masked Image ({self.implementation})")
-            axes[1].axis("off")
-            
-            if self.hierarchical_features:
-                axes[2].imshow(masked_label)
-                axes[2].set_title(f"Masked Label ({self.implementation})")
-                axes[2].axis("off")
-
-                axes[3].imshow(pred_vis)
-                axes[3].set_title(f"Model Prediction ({self.implementation})")
-                axes[3].axis("off")
-
-                plt.tight_layout()
-            #plt.savefig(f"masked_vs_raw_{self.implementation}.png", dpi=300)
-            plt.close()
-
-            if wandb.run:
-                wandb.log({
-                    "Masked vs Raw": wandb.Image(fig),
-                    "Retained Patches": patch_mask.sum() / total_patches
-                })
-        #return x
-        """
         if not self.hierarchical_features:
             return x, None, None
         else:
@@ -695,14 +661,12 @@ class RViT(nn.Module):
         return self.model.forward_head(x)
     """
 
-
-    
     #SEGMENTATION
-    def forward(self, x, label=None):
+    def forward(self, x, keys=None, label=None):
         if self.mask_in_token_space:
             x = self.forward_mask_in_token_space(x,verbose=False)
         else:
-            x, hiearchical_mask, final_mask = self.forward_mask_in_image_space(x,label, verbose=False)
+            x, hiearchical_mask, final_mask = self.forward_mask_in_image_space(x,keys,label,verbose=False)
         if not self.hierarchical_features:
             return self.model.forward_head(x)
         else:
