@@ -61,6 +61,20 @@ def init_offline_experiment(configs):
     return configs
 
 
+import argparse
+
+def str2bool(v):
+    if isinstance(v, bool):
+        return v
+    if v.lower() in ('true', 't', 'yes', 'y', '1'):
+        return True
+    elif v.lower() in ('false', 'f', 'no', 'n', '0'):
+        return False
+    else:
+        raise argparse.ArgumentTypeError("Boolean value expected.")
+
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default=None)
@@ -71,7 +85,10 @@ if __name__ == "__main__":
     parser.add_argument("--wandb_id_resume", default=None)
     parser.add_argument("--seed", default=0, type=int)
     parser.add_argument("--mask_threshold", default=None, type=float)
-
+    parser.add_argument("--implementation", default=None, type=str)
+    parser.add_argument("--attention_mask", default=None, type=str2bool)
+    parser.add_argument("--retain_percent", default=None, type=int)
+    parser.add_argument("--backbone", default=None, type=str)
 
     args = parser.parse_args()
 

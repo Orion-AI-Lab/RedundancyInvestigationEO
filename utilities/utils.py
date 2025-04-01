@@ -184,6 +184,14 @@ def load_configs(args=None):
     method_config = load_config_file(method_config_path)
     if args.mask_threshold is not None:
         method_config["mask_threshold"] = args.mask_threshold
+    if args.implementation is not None:
+        method_config["implementation"] = args.implementation
+    if args.attention_mask is not None:
+        method_config["attention_mask"] = args.attention_mask
+    if args.backbone is not None:
+        method_config["backbone"] = args.backbone
+    if args.retain_percent is not None:
+        method_config["retain_percent"] = args.retain_percent
     config.update(method_config)
 
     # Load training configs
@@ -414,6 +422,11 @@ def create_webdataset_loaders(
         for sample in src:
             image = torch.load(io.BytesIO(sample["image.pth"])).float()
             label = torch.load(io.BytesIO(sample["labels.pth"]))
+            if configs['dataset']=='marida':
+                image = einops.rearrange(image, "h w c-> c h w")
+                label[label==-1] = 11
+            if configs['dataset']=='mlrsnet':
+                    label = label.float()
             if configs['dataset']=='sen12ms':
                 label[label>=configs['threshold']] = 1
                 label[label<configs['threshold']] = 0                
@@ -433,6 +446,7 @@ def create_webdataset_loaders(
                 if configs["dataset"] == "rapidai4eo":
                     label[label >= configs["class_threshold"]] = 1
                     label[label < configs["class_threshold"]] = 0
+               
             if configs["dataset"] == "uav" or configs["dataset"] == "woody":
                 # Remove alpha channel from combined uav datasets (Some have it some don't)
                 image = image[:3, :, :]
@@ -451,6 +465,7 @@ def create_webdataset_loaders(
                     or configs["dataset"] == "forestnet"
                     or configs["dataset"] == "fivebillionpixels"
                     or configs["dataset"] == "flair2"
+                    or configs["dataset"] == "bigearthnet"
                 ):
                     if configs["task"] == "classification":
                         image = image.permute(1, 2, 0).numpy()
@@ -534,7 +549,7 @@ def create_webdataset_loaders(
                         mean = list((configs["mean"][:2]))
                         std = list((configs["std"][:2]))
                         normalization = transforms.Normalize(mean=mean, std=std)
-                if "rgb" not in configs or (not configs['rgb'] and not ('sar' in configs and configs['sar'])):
+                if "rgb" not in configs or (not configs['rgb'] and ('sar' not in configs or not configs['sar'])):
                     normalization = transforms.Normalize(mean=configs["mean"], std=configs["std"])
                 image = normalization(image)
                 
@@ -545,14 +560,19 @@ def create_webdataset_loaders(
                     l5[inverted_nomenclature_five[i]] = l5[inverted_nomenclature_five[i]] or label[i]
                 label = l5
             if not yield_dataset:
-                yield (image, label)
+                yield (image, label, sample["__key__"])
             else:
-                yield (image, label, configs["dataset"])
+                yield (image, label, sample["__key__"], configs["dataset"])
 
     def get_patches_eval(src):
         for sample in src:
             image = torch.load(io.BytesIO(sample["image.pth"])).float()
             label = torch.load(io.BytesIO(sample["labels.pth"]))
+            if configs['dataset']=='marida':
+                image = einops.rearrange(image, "h w c-> c h w")
+                label[label==-1] = 11
+            if configs['dataset']=='mlrsnet':
+                    label = label.float()
             if configs['dataset']=='tallos':
                 image[image>3e38] = 0.0
                 image = torch.nan_to_num(image,nan=0.0)            
@@ -563,12 +583,17 @@ def create_webdataset_loaders(
                 label[label<configs['threshold']] = 0
             if configs['dataset'] == 'treesatai' and 's1_60m' in configs['data_source']:
                 image = image[:2, :, :]
+
+            
               
             if isinstance(label, dict):
                 label = label["label"]
                 if configs["dataset"] == "rapidai4eo":
                     label[label >= configs["class_threshold"]] = 1
                     label[label < configs["class_threshold"]] = 0
+
+                if configs['dataset']=='mlrsnet':
+                    labels = labels.float()
             if configs["enforce_resize"] is not None:
                 if (
                     configs["linear_evaluation"]
@@ -577,6 +602,7 @@ def create_webdataset_loaders(
                     or configs["dataset"] == "forestnet"
                     or configs["dataset"] == "fivebillionpixels"
                     or configs["dataset"] == "flair2"
+                    or configs["dataset"] == "bigearthnet"
                 ):
                     if configs["task"] == "classification":
                         image = image.permute(1, 2, 0).numpy()
@@ -644,7 +670,7 @@ def create_webdataset_loaders(
                         mean = list((configs["mean"][:2]))
                         std = list((configs["std"][:2]))
                         normalization = transforms.Normalize(mean=mean, std=std)
-                if "rgb" not in configs or (not configs['rgb'] and not configs['sar']):
+                if "rgb" not in configs or (not configs['rgb'] and ('sar' not in configs or not configs['sar'])):
                     normalization = transforms.Normalize(mean=configs["mean"], std=configs["std"])
                 #normalization = transforms.Normalize(mean=configs["mean"], std=configs["std"])
                 image = normalization(image)
@@ -828,6 +854,7 @@ def create_universal_webdataset_loader(configs):
             # Need to decide whether to share workers among datasets or split them equally
             if configs["split_workers"]:
                 current_config["num_workers"] = configs["num_workers"] // len(configs["train_datasets"])
+            
                 print(
                     "Setting up loader for dataset: ",
                     dataset,

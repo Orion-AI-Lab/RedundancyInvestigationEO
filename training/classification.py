@@ -60,21 +60,24 @@ def train_epoch(train_loader, model, optimizer, criterion, epoch, configs, scale
                 break
         optimizer.zero_grad()
         with torch.cuda.amp.autocast(enabled=configs["mixed_precision"]):
-            image, label = batch
+            image, label, keys = batch
+            #print("Keys found in batch") if keys is not None else print("Keys not found in batch")
+
             num_samples += image.shape[0]
             image = image.to(configs["device"])
             label = label.to(configs["device"])
-
+            
             if not configs["linear_evaluation"] and not configs["fully_finetune"]:
                 if not resnet_star_evaluation:
-                    out = model(image)
+                    out = model(image, keys=keys)
                 else:
                     image = image[:, desired_indices, :, :]
-                    out = model(image)
+                    out = model(image, keys=keys)
             else:
                 image = image[:, desired_indices, :, :]
+                out = model((image, spectral_keys), keys=keys)
 
-                out = model((image, spectral_keys))
+            
             loss = criterion(out, label)
             running_loss += loss.item()
         if idx % 100 == 0:
@@ -228,6 +231,7 @@ def test(configs, phase, model=None, loader=None, criterion=None, epoch="Test"):
 
                 loss = criterion(out, label)
                 total_loss += loss.item()
+
                 for metric in metrics:
                     if metric.__class__.__name__ == "MultilabelAveragePrecision":
                         label = label.int()
