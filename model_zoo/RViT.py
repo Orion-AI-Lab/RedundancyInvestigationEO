@@ -212,7 +212,7 @@ class RViT(nn.Module):
         # Count how many patches are masked per sample (excluding CLS token)
         masked_patches_per_sample = (~keep_mask[:, 1:]).sum(dim=1)
         unmasked_patches_per_sample = (keep_mask[:, 1:]).sum(dim=1)
-
+        
         # Sum patches across the whole batch
         masked_patches_in_batch = masked_patches_per_sample.sum()
         unmasked_patches_in_batch = unmasked_patches_per_sample.sum() #chech if it is pushed
