@@ -9,6 +9,7 @@ import os
 import utilities.model_utilities as model_utils
 import utilities.utils as utils
 from utilities.model_utilities import adjust_learning_rate, get_current_learning_rate
+import time
 
 def early_stopping(val_loss, best_loss, counter, patience=5):
     if val_loss < best_loss:
@@ -134,6 +135,8 @@ def train(configs):
 
     early_stop_counter = 0
 
+    start_time = time.time()
+
     for epoch in range(start_epoch,configs["epochs"]):
         train_epoch(train_loader, model, optimizer, criterion, epoch, configs, scaler)
         val_loss = test(configs, phase="val", model=model, criterion=criterion, loader=val_loader, epoch=epoch)
@@ -160,7 +163,9 @@ def train(configs):
         if early_stop:
             print("Early stopping at epoch: ", epoch)
             break
-
+    total_time = time.time() - start_time
+    if configs["wandb"]:
+        wandb.log({"Total Training Time (s)": total_time})
 
 def test(configs, phase, model=None, loader=None, criterion=None, epoch="Test"):
     if phase == "test":
