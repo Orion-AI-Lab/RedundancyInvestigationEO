@@ -116,9 +116,19 @@ def train(configs):
         base_model.parameters(), lr=configs["lr"], weight_decay=configs["weight_decay"]
     )
 
-    # compile model (torch 2.0)
-    # model = torch.compile(base_model)
-    model = base_model
+    # compile model conditionally
+    try:
+        if "tiny_vit" in configs.get("model", "").lower(): #Skipping torch.compile for tiny-ViT (known issues)
+            model = base_model
+        else:
+            model = torch.compile(base_model)
+    except Exception as e:
+        print(f"torch.compile failed with error: {e}")
+        print("Falling back to eager mode...")
+        model = base_model
+
+
+
     if configs["mixed_precision"]:
         # Creates a GradScaler once at the beginning of training.
         scaler = torch.cuda.amp.GradScaler()
@@ -178,8 +188,15 @@ def test(configs, phase, model=None, loader=None, criterion=None, epoch="Test"):
         # Load model from checkpoint
         model = torch.load(os.path.join(configs["checkpoint_path"], "best_model.pt"), map_location=configs["device"])
 
-        # compile model
-        model = torch.compile(model)
+        # compile model conditionally
+        try:
+            if "tiny_vit" in configs.get("model", "").lower():
+                model= model #Skipping torch.compile for tiny-ViT (known issues)
+            else:
+                model = torch.compile(model)
+        except Exception as e:
+            print(f"torch.compile failed with error: {e}")
+            print("Falling back to eager mode...")
 
     elif phase == "val":
         print("=" * 20)
