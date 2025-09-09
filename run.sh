@@ -12,7 +12,7 @@
 # Parameter arrays
 #CLASSIFICATION
 #vit_backbones=("vit_tiny_patch16_224.augreg_in21k" "vit_small_patch16_224.augreg_in21k" "vit_base_patch16_224.augreg_in21k")
-vit_backbones=("vit_tiny_patch16_224.augreg_in21k")
+vit_backbones=("vit_small_patch8_224")
 
 
 #SEGMENTATION
@@ -22,14 +22,14 @@ vit_backbones=("vit_tiny_patch16_224.augreg_in21k")
 
 
 #implementations=("topx%" "random_topx%" "median" "max_len")
-implementations=("random_topx%")
+implementations=("topx%")
 #implementations=("median")
 
 mask_thresholds=(0.85 0.8 0.75 0.7 0.6 0.25)
 #mask_thresholds=(0.8)
 #retain_percents=(85 50 40 25 15 5)
-retain_percents=(100 85 50 40 25 15 5)
-#retain_percents=(50)
+#retain_percents=(100 85 50 40 25 15 5)
+retain_percents=(100)
 
 # Fixed configuration files and seed (adjust these paths as needed)
 #main_config="configs/main_configs/bigearthnet.json"
@@ -39,7 +39,8 @@ main_config="configs/main_configs/mlrsnet.json"
 #main_config="configs/main_configs/marida.json"
 method_config="configs/method/classification/rvit.json"
 #method_config="configs/method/segmentation/rvitupernet.json"
-training_config="configs/training/training_per_dataset/rvit/bigearthnet_training.json"
+#training_config="configs/training/training_per_dataset/rvit/bigearthnet_training.json"
+training_config="configs/training/training_per_dataset/rvit/mlrsnet_training.json"
 #training_config="configs/training/training_per_dataset/rvitupernet/woody_training.json"
 #training_config="configs/training/training_per_dataset/woody_training.json"
 

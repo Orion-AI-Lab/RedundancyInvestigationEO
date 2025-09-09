@@ -10,6 +10,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 import hashlib
 
+import torch._dynamo
+torch._dynamo.config.suppress_errors = True
+
 class RViT(nn.Module):
     def __init__(self, num_classes, backbone, image_size, num_channels, pretrained=True, mask_threshold=0.9,mask_in_token_space=True, implementation="max_len", pad_value=0.0, retain_percent=0,attention_mask=False, hierarchical_features=False):
         """

@@ -196,10 +196,10 @@ def load_configs(args=None):
 
     # Load training configs
     if not custom_training_config:
-        if config["task"] == "detection":
-            training_configs_path = "configs/training/detection_training.json"
-        else:
-            training_configs_path = "configs/training/training.json"
+        #if config["task"] == "detection":
+        #    training_configs_path = "configs/training/detection_training.json"
+        #else:
+        training_configs_path = "configs/training/training.json"
     else:
         training_configs_path = args.training_config
     training_configs = load_config_file(training_configs_path)
@@ -214,12 +214,12 @@ def load_configs(args=None):
 
     # Load augmentation configurations
     if config["augment"]:
-        if config["task"] == "detection":
-            augmentation_configs_path = os.path.join("configs", "augmentations", "detection_augmentations.json")
-        elif config["task"] == "point_segmentation":
-            augmentation_configs_path = os.path.join("configs", "augmentations", "point_augmentations.json")
-        else:
-            augmentation_configs_path = args.augmentation_config
+        # if config["task"] == "detection":
+        #     augmentation_configs_path = os.path.join("configs", "augmentations", "detection_augmentations.json")
+        # elif config["task"] == "point_segmentation":
+        #     augmentation_configs_path = os.path.join("configs", "augmentations", "point_augmentations.json")
+        # else:
+        augmentation_configs_path = args.augmentation_config
         augmentations_config = load_config_file(augmentation_configs_path)
         config.update(augmentations_config)
     else:
@@ -276,8 +276,8 @@ def get_dataset(dataset_name, configs, mode):
         dataset = datasets.WoodyDataset.WoodyDataset(configs, mode)
     elif dataset_name.lower() == "forestnet":
         dataset = datasets.ForestNetDataset.ForestNetDataset(configs, mode)
-    elif dataset_name.lower() in ("neontree", "neontree_detection", "neontree_point_cloud"):
-        dataset = datasets.NeonTreeDataset.NeonTreeDataset(configs, mode)
+    # elif dataset_name.lower() in ("neontree", "neontree_detection", "neontree_point_cloud"):
+    #     dataset = datasets.NeonTreeDataset.NeonTreeDataset(configs, mode)
     elif dataset_name.lower() == "spekboom":
         dataset = datasets.SpekboomDataset.SpekboomDataset(configs, mode)
     elif dataset_name.lower() == "waititu":
@@ -300,24 +300,24 @@ def get_dataset(dataset_name, configs, mode):
         dataset = datasets.FiveBillionPixelsDataset.FiveBillionPixelsDataset(configs, mode)
     elif dataset_name.lower() == "forinstance":
         dataset = datasets.FORinstanceDataset.FORinstanceDataset(configs, mode)
-    elif dataset_name.lower() == "mixed_detection":
-        if mode == 'test':
-            dataset = list()
-            dataset_names = configs['dataset_names'].split(',')
-            for dataset_name in dataset_names:
-                dataset.append(datasets.MixedDetectionDataset.MixedDetectionDataset(configs, mode,
-                                                                                    test_on=dataset_name))
-        else:
-            dataset = datasets.MixedDetectionDataset.MixedDetectionDataset(configs, mode)
-    elif dataset_name.lower() == "mixed_pointcloud":
-        if mode == 'test':
-            dataset = list()
-            dataset_names = configs['dataset_names'].split(',')
-            for dataset_name in dataset_names:
-                dataset.append(datasets.MixedPCSegDataset.MixedPCSegDataset(configs, mode,
-                                                                            test_on=dataset_name))
-        else:
-            dataset = datasets.MixedPCSegDataset.MixedPCSegDataset(configs, mode)
+    # elif dataset_name.lower() == "mixed_detection":
+    #     if mode == 'test':
+    #         dataset = list()
+    #         dataset_names = configs['dataset_names'].split(',')
+    #         for dataset_name in dataset_names:
+    #             dataset.append(datasets.MixedDetectionDataset.MixedDetectionDataset(configs, mode,
+    #                                                                                 test_on=dataset_name))
+    #     else:
+    #         dataset = datasets.MixedDetectionDataset.MixedDetectionDataset(configs, mode)
+    # elif dataset_name.lower() == "mixed_pointcloud":
+    #     if mode == 'test':
+    #         dataset = list()
+    #         dataset_names = configs['dataset_names'].split(',')
+    #         for dataset_name in dataset_names:
+    #             dataset.append(datasets.MixedPCSegDataset.MixedPCSegDataset(configs, mode,
+    #                                                                         test_on=dataset_name))
+    #     else:
+    #         dataset = datasets.MixedPCSegDataset.MixedPCSegDataset(configs, mode)
     else:
         print("Dataset not supported")
         exit(2)
@@ -910,26 +910,26 @@ def initialize_metrics(configs):
     metrics = []
     for metric in configs["metrics"]:
         for metric_aggregation_strategy in configs["metric_aggregation_strategy"]:
-            if configs["task"] == "detection":
-                det_format = configs["det_format"]
-                if det_format == "pascal_voc":
-                    box_format = "xyxy"
-                elif det_format == "coco":
-                    box_format = "xywh"
-                elif det_format == "yolo":
-                    box_format = "cxcywh"
-                else:
-                    raise Exception("Detection format {} is not supported".format(det_format))
-                if metric.lower() == "iou":
-                    m = IntersectionOverUnion(box_format=box_format, iou_threshold=0.3, class_metrics=True)
-                elif metric.lower() == "ciou":
-                    m = CompleteIntersectionOverUnion(box_format=box_format, iou_threshold=0.3, class_metrics=True)
-                elif metric.lower() == "map":
-                    m = MeanAveragePrecision(box_format=box_format, iou_type="bbox", class_metrics=True)
-                else:
-                    print("Metric: ", metric, " not supported!")
-                    continue
-            elif configs["multilabel"]:
+            # if configs["task"] == "detection":
+            #     det_format = configs["det_format"]
+            #     if det_format == "pascal_voc":
+            #         box_format = "xyxy"
+            #     elif det_format == "coco":
+            #         box_format = "xywh"
+            #     elif det_format == "yolo":
+            #         box_format = "cxcywh"
+            #     else:
+            #         raise Exception("Detection format {} is not supported".format(det_format))
+            #     if metric.lower() == "iou":
+            #         m = IntersectionOverUnion(box_format=box_format, iou_threshold=0.3, class_metrics=True)
+            #     elif metric.lower() == "ciou":
+            #         m = CompleteIntersectionOverUnion(box_format=box_format, iou_threshold=0.3, class_metrics=True)
+            #     elif metric.lower() == "map":
+            #         m = MeanAveragePrecision(box_format=box_format, iou_type="bbox", class_metrics=True)
+            #     else:
+            #         print("Metric: ", metric, " not supported!")
+            #         continue
+            if configs["multilabel"]:
                 if metric.lower() == "accuracy":
                     m = Accuracy(
                         task="multilabel",
@@ -1045,9 +1045,9 @@ def create_procedures(configs):
     elif configs["task"] == "point_segmentation":
         trainer = point_segmentation.train
         tester = point_segmentation.test
-    elif configs["task"] == "detection":
-        trainer = detection.train
-        tester = detection.test
+    # elif configs["task"] == "detection":
+    #     trainer = detection.train
+    #     tester = detection.test
     elif configs["task"] == "mae":
         trainer = mae_training.train
         tester = None
@@ -1113,124 +1113,124 @@ def apply_class_filter(orig_prediction, class_to_filter=0):
     return final_prediction
 
 
-def create_class_id_to_label(dataset_name):
-    if dataset_name.lower() in ('neontree', 'neontree_detection'):
-        class_id_to_label = {1: 'tree'}
-    elif dataset_name.lower() == 'reforestree':
-        class_id_to_label = {0: 'other', 1: 'banana', 2: 'cacao', 3: 'citrus', 4: 'fruit', 5: 'timber'}
-    elif dataset_name.lower() == 'mixed_detection':
-        class_id_to_label = {0: 'other', 1: 'banana', 2: 'cacao', 3: 'citrus', 4: 'fruit', 5: 'timber'}
-    else:
-        raise AttributeError("Dataset {} is not supported for class_id_to_label.".format(dataset_name))
-    return class_id_to_label
+# def create_class_id_to_label(dataset_name):
+#     if dataset_name.lower() in ('neontree', 'neontree_detection'):
+#         class_id_to_label = {1: 'tree'}
+#     elif dataset_name.lower() == 'reforestree':
+#         class_id_to_label = {0: 'other', 1: 'banana', 2: 'cacao', 3: 'citrus', 4: 'fruit', 5: 'timber'}
+#     elif dataset_name.lower() == 'mixed_detection':
+#         class_id_to_label = {0: 'other', 1: 'banana', 2: 'cacao', 3: 'citrus', 4: 'fruit', 5: 'timber'}
+#     else:
+#         raise AttributeError("Dataset {} is not supported for class_id_to_label.".format(dataset_name))
+#     return class_id_to_label
 
 
-def format_bboxes_wandb(bboxes_dict, det_format="pascal_voc", im_size=None):
-    # Removed scores, not fully supported yet
-    all_boxes = list()
-    for i, box in enumerate(bboxes_dict["boxes"]):
-        box = box.cpu().numpy()
-        if det_format == "coco":
-            # [x_min, y_min, w, h] -> [x_min, y_min, x_max, y_max]
-            box = [box[0], box[1], box[0] + box[2], box[1] + box[3]]
-        if det_format == "yolo":
-            # [x_center, y_center, w, h] (normalized) -> [x_min, y_min, x_max, y_max]
-            im_w, im_h = im_size
-            x_center, y_center, width, height = box
-            x_min = int(im_w * max(float(x_center) - float(width) / 2, 0))
-            x_max = int(im_w * min(float(x_center) + float(width) / 2, 1))
-            y_min = int(im_h * max(float(y_center) - float(height) / 2, 0))
-            y_max = int(im_h * min(float(y_center) + float(height) / 2, 1))
-            box = [x_min, y_min, x_max, y_max]
-        box_data = {
-            "position": {
-                "minX": int(box[0]),
-                "minY": int(box[1]),
-                "maxX": int(box[2]),
-                "maxY": int(box[3]),
-            },
-            "class_id": bboxes_dict["labels"][i].item(),
-            "box_caption": "%s" % (bboxes_dict["labels"][i].item()),
-            "domain": "pixel",
-        }
-        all_boxes.append(box_data)
-    return all_boxes
+# def format_bboxes_wandb(bboxes_dict, det_format="pascal_voc", im_size=None):
+#     # Removed scores, not fully supported yet
+#     all_boxes = list()
+#     for i, box in enumerate(bboxes_dict["boxes"]):
+#         box = box.cpu().numpy()
+#         if det_format == "coco":
+#             # [x_min, y_min, w, h] -> [x_min, y_min, x_max, y_max]
+#             box = [box[0], box[1], box[0] + box[2], box[1] + box[3]]
+#         if det_format == "yolo":
+#             # [x_center, y_center, w, h] (normalized) -> [x_min, y_min, x_max, y_max]
+#             im_w, im_h = im_size
+#             x_center, y_center, width, height = box
+#             x_min = int(im_w * max(float(x_center) - float(width) / 2, 0))
+#             x_max = int(im_w * min(float(x_center) + float(width) / 2, 1))
+#             y_min = int(im_h * max(float(y_center) - float(height) / 2, 0))
+#             y_max = int(im_h * min(float(y_center) + float(height) / 2, 1))
+#             box = [x_min, y_min, x_max, y_max]
+#         box_data = {
+#             "position": {
+#                 "minX": int(box[0]),
+#                 "minY": int(box[1]),
+#                 "maxX": int(box[2]),
+#                 "maxY": int(box[3]),
+#             },
+#             "class_id": bboxes_dict["labels"][i].item(),
+#             "box_caption": "%s" % (bboxes_dict["labels"][i].item()),
+#             "domain": "pixel",
+#         }
+#         all_boxes.append(box_data)
+#     return all_boxes
 
 
-def format_bboxes_voc_to_yolo(box, im_size):
-    # Check boundaries
-    if box[0] >= im_size[0]:
-        box[0] = im_size[0] - 1
-    if box[1] >= im_size[0]:
-        box[1] = im_size[0]
-    if box[2] >= im_size[1]:
-        box[2] = im_size[1] - 1
-    if box[3] >= im_size[1]:
-        box[3] = im_size[1]
+# def format_bboxes_voc_to_yolo(box, im_size):
+#     # Check boundaries
+#     if box[0] >= im_size[0]:
+#         box[0] = im_size[0] - 1
+#     if box[1] >= im_size[0]:
+#         box[1] = im_size[0]
+#     if box[2] >= im_size[1]:
+#         box[2] = im_size[1] - 1
+#     if box[3] >= im_size[1]:
+#         box[3] = im_size[1]
 
-    dw = 1.0 / (im_size[0])
-    dh = 1.0 / (im_size[1])
-    x = (box[0] + box[1]) / 2.0
-    y = (box[2] + box[3]) / 2.0
-    w = box[1] - box[0]
-    h = box[3] - box[2]
-    x = x * dw
-    w = w * dw
-    y = y * dh
-    h = h * dh
-    return [x, y, w, h]
-
-
-def format_bboxes_coco_to_yolo(box, target_im_size, source_im_size=None):
-    # [x_center, y_center, w, h] -> [x_center, y_center, w, h] (normalized)
-    if source_im_size:
-        # Hypothesis: images have same w and h
-        scaling_factor = (torch.tensor(target_im_size) / torch.tensor(source_im_size))[0]
-    else:
-        scaling_factor = torch.tensor(1.0)
-    img_w, img_h = target_im_size
-    x = box[0] * scaling_factor
-    y = box[1] * scaling_factor
-    w = box[2] * scaling_factor
-    h = box[3] * scaling_factor
-
-    # Finding midpoints
-    x_center = (x + (x + w)) / 2
-    y_center = (y + (y + h)) / 2
-
-    # Normalization
-    x_center = x_center / img_w
-    y_center = y_center / img_h
-    w = w / img_w
-    h = h / img_h
-
-    return [x_center, y_center, w, h]
+#     dw = 1.0 / (im_size[0])
+#     dh = 1.0 / (im_size[1])
+#     x = (box[0] + box[1]) / 2.0
+#     y = (box[2] + box[3]) / 2.0
+#     w = box[1] - box[0]
+#     h = box[3] - box[2]
+#     x = x * dw
+#     w = w * dw
+#     y = y * dh
+#     h = h * dh
+#     return [x, y, w, h]
 
 
-def format_bboxes_yolo_to_pascal(box, im_size):
-    # [x_center, y_center, w, h] (normalized) -> [x_min, y_min, x_max, y_max]
-    img_w, img_h = im_size
-    x_c, y_c, w, h = box.unbind(1)
-    b = [(x_c - 0.5 * w), (y_c - 0.5 * h), (x_c + 0.5 * w), (y_c + 0.5 * h)]
-    b = torch.stack(b, dim=1)
-    b = b * torch.tensor([img_w, img_h, img_w, img_h], dtype=torch.float32).to("cuda")
-    return b
+# def format_bboxes_coco_to_yolo(box, target_im_size, source_im_size=None):
+#     # [x_center, y_center, w, h] -> [x_center, y_center, w, h] (normalized)
+#     if source_im_size:
+#         # Hypothesis: images have same w and h
+#         scaling_factor = (torch.tensor(target_im_size) / torch.tensor(source_im_size))[0]
+#     else:
+#         scaling_factor = torch.tensor(1.0)
+#     img_w, img_h = target_im_size
+#     x = box[0] * scaling_factor
+#     y = box[1] * scaling_factor
+#     w = box[2] * scaling_factor
+#     h = box[3] * scaling_factor
+
+#     # Finding midpoints
+#     x_center = (x + (x + w)) / 2
+#     y_center = (y + (y + h)) / 2
+
+#     # Normalization
+#     x_center = x_center / img_w
+#     y_center = y_center / img_h
+#     w = w / img_w
+#     h = h / img_h
+
+#     return [x_center, y_center, w, h]
 
 
-def format_bboxes_coco_to_pascal(box, target_im_size=None, source_im_size=None):
-    # [x_center, y_center, w, h] -> [x_min, y_min, x_max, y_max]
-    if source_im_size and target_im_size:
-        # Hypothesis: images have same w and h
-        scaling_factor = (torch.tensor(target_im_size) / torch.tensor(source_im_size))[0]
-    else:
-        scaling_factor = torch.tensor(1.0)
+# def format_bboxes_yolo_to_pascal(box, im_size):
+#     # [x_center, y_center, w, h] (normalized) -> [x_min, y_min, x_max, y_max]
+#     img_w, img_h = im_size
+#     x_c, y_c, w, h = box.unbind(1)
+#     b = [(x_c - 0.5 * w), (y_c - 0.5 * h), (x_c + 0.5 * w), (y_c + 0.5 * h)]
+#     b = torch.stack(b, dim=1)
+#     b = b * torch.tensor([img_w, img_h, img_w, img_h], dtype=torch.float32).to("cuda")
+#     return b
 
-    x_min, y_min, w, h = box.unbind(1)
 
-    b = [x_min, y_min, (x_min + w), (y_min + h)]
-    b = torch.stack(b, dim=1)
-    b = b * scaling_factor
-    return b
+# def format_bboxes_coco_to_pascal(box, target_im_size=None, source_im_size=None):
+#     # [x_center, y_center, w, h] -> [x_min, y_min, x_max, y_max]
+#     if source_im_size and target_im_size:
+#         # Hypothesis: images have same w and h
+#         scaling_factor = (torch.tensor(target_im_size) / torch.tensor(source_im_size))[0]
+#     else:
+#         scaling_factor = torch.tensor(1.0)
+
+#     x_min, y_min, w, h = box.unbind(1)
+
+#     b = [x_min, y_min, (x_min + w), (y_min + h)]
+#     b = torch.stack(b, dim=1)
+#     b = b * scaling_factor
+#     return b
 
 
 def count_params(model):
