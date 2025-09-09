@@ -11,6 +11,8 @@ import matplotlib.pyplot as plt
 import hashlib
 
 import torch._dynamo
+TORCH_LOGS="+dynamo"
+TORCHDYNAMO_VERBOSE=1
 torch._dynamo.config.suppress_errors = True
 
 class RViT(nn.Module):
@@ -496,6 +498,7 @@ class RViT(nn.Module):
                     wandb.log({"unmasked_patches_ratio": k / orig_shape[1]})
 
         elif self.implementation == "max_len":
+            print ("Max len")   
             if self.training and self.mask_threshold < 1.0:
 
                 keep_mask = keep_mask[:, :total_patches]  # Ensure matching shape

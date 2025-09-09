@@ -19,7 +19,7 @@ from torchmetrics import Accuracy, F1Score, JaccardIndex, Precision, Recall, Ave
 from torchmetrics.classification import MultilabelCoverageError
 import albumentations as A
 
-from torchmetrics.detection import MeanAveragePrecision, CompleteIntersectionOverUnion, IntersectionOverUnion
+#from torchmetrics.detection import MeanAveragePrecision, CompleteIntersectionOverUnion, IntersectionOverUnion
 
 import datasets
 import training.classification as classification
@@ -65,14 +65,15 @@ def create_checkpoint_path(configs):
         checkpoint_path = (
             checkpoint_root_path / configs["task"].lower() / configs["dataset"].lower() / configs["backbone"].lower()
         )
-    elif configs["task"] == "detection":
-        checkpoint_path = (
-            checkpoint_root_path
-            / configs["task"].lower()
-            / configs["dataset"].lower()
-            / configs["architecture"].lower()
-            / configs["backbone"].lower()
-        )
+    # elif configs["task"] == "detection":
+    #     print("Detection WTF")
+    #     checkpoint_path = (
+    #         checkpoint_root_path
+    #         / configs["task"].lower()
+    #         / configs["dataset"].lower()
+    #         / configs["architecture"].lower()
+    #         / configs["backbone"].lower()
+    #     )
     elif configs["task"] == "point_segmentation":
         checkpoint_path = (
             checkpoint_root_path
@@ -1082,15 +1083,15 @@ def create_image_processor(configs):
     return image_processor
 
 
-def apply_nms(orig_prediction, iou_thresh=0.3):
-    """NMS threshold for detection evaluation"""
-    # torchvision returns the indices of the bboxes to keep
-    keep = torchvision.ops.nms(orig_prediction["boxes"], orig_prediction["scores"], iou_thresh)
-    final_prediction = orig_prediction
-    final_prediction["boxes"] = final_prediction["boxes"][keep]
-    final_prediction["scores"] = final_prediction["scores"][keep]
-    final_prediction["labels"] = final_prediction["labels"][keep]
-    return final_prediction
+# def apply_nms(orig_prediction, iou_thresh=0.3):
+#     """NMS threshold for detection evaluation"""
+#     # torchvision returns the indices of the bboxes to keep
+#     keep = torchvision.ops.nms(orig_prediction["boxes"], orig_prediction["scores"], iou_thresh)
+#     final_prediction = orig_prediction
+#     final_prediction["boxes"] = final_prediction["boxes"][keep]
+#     final_prediction["scores"] = final_prediction["scores"][keep]
+#     final_prediction["labels"] = final_prediction["labels"][keep]
+#     return final_prediction
 
 
 def apply_conf(orig_prediction, conf_thresh=0.3):
@@ -1111,126 +1112,6 @@ def apply_class_filter(orig_prediction, class_to_filter=0):
     final_prediction["scores"] = final_prediction["scores"][keep]
     final_prediction["labels"] = final_prediction["labels"][keep]
     return final_prediction
-
-
-# def create_class_id_to_label(dataset_name):
-#     if dataset_name.lower() in ('neontree', 'neontree_detection'):
-#         class_id_to_label = {1: 'tree'}
-#     elif dataset_name.lower() == 'reforestree':
-#         class_id_to_label = {0: 'other', 1: 'banana', 2: 'cacao', 3: 'citrus', 4: 'fruit', 5: 'timber'}
-#     elif dataset_name.lower() == 'mixed_detection':
-#         class_id_to_label = {0: 'other', 1: 'banana', 2: 'cacao', 3: 'citrus', 4: 'fruit', 5: 'timber'}
-#     else:
-#         raise AttributeError("Dataset {} is not supported for class_id_to_label.".format(dataset_name))
-#     return class_id_to_label
-
-
-# def format_bboxes_wandb(bboxes_dict, det_format="pascal_voc", im_size=None):
-#     # Removed scores, not fully supported yet
-#     all_boxes = list()
-#     for i, box in enumerate(bboxes_dict["boxes"]):
-#         box = box.cpu().numpy()
-#         if det_format == "coco":
-#             # [x_min, y_min, w, h] -> [x_min, y_min, x_max, y_max]
-#             box = [box[0], box[1], box[0] + box[2], box[1] + box[3]]
-#         if det_format == "yolo":
-#             # [x_center, y_center, w, h] (normalized) -> [x_min, y_min, x_max, y_max]
-#             im_w, im_h = im_size
-#             x_center, y_center, width, height = box
-#             x_min = int(im_w * max(float(x_center) - float(width) / 2, 0))
-#             x_max = int(im_w * min(float(x_center) + float(width) / 2, 1))
-#             y_min = int(im_h * max(float(y_center) - float(height) / 2, 0))
-#             y_max = int(im_h * min(float(y_center) + float(height) / 2, 1))
-#             box = [x_min, y_min, x_max, y_max]
-#         box_data = {
-#             "position": {
-#                 "minX": int(box[0]),
-#                 "minY": int(box[1]),
-#                 "maxX": int(box[2]),
-#                 "maxY": int(box[3]),
-#             },
-#             "class_id": bboxes_dict["labels"][i].item(),
-#             "box_caption": "%s" % (bboxes_dict["labels"][i].item()),
-#             "domain": "pixel",
-#         }
-#         all_boxes.append(box_data)
-#     return all_boxes
-
-
-# def format_bboxes_voc_to_yolo(box, im_size):
-#     # Check boundaries
-#     if box[0] >= im_size[0]:
-#         box[0] = im_size[0] - 1
-#     if box[1] >= im_size[0]:
-#         box[1] = im_size[0]
-#     if box[2] >= im_size[1]:
-#         box[2] = im_size[1] - 1
-#     if box[3] >= im_size[1]:
-#         box[3] = im_size[1]
-
-#     dw = 1.0 / (im_size[0])
-#     dh = 1.0 / (im_size[1])
-#     x = (box[0] + box[1]) / 2.0
-#     y = (box[2] + box[3]) / 2.0
-#     w = box[1] - box[0]
-#     h = box[3] - box[2]
-#     x = x * dw
-#     w = w * dw
-#     y = y * dh
-#     h = h * dh
-#     return [x, y, w, h]
-
-
-# def format_bboxes_coco_to_yolo(box, target_im_size, source_im_size=None):
-#     # [x_center, y_center, w, h] -> [x_center, y_center, w, h] (normalized)
-#     if source_im_size:
-#         # Hypothesis: images have same w and h
-#         scaling_factor = (torch.tensor(target_im_size) / torch.tensor(source_im_size))[0]
-#     else:
-#         scaling_factor = torch.tensor(1.0)
-#     img_w, img_h = target_im_size
-#     x = box[0] * scaling_factor
-#     y = box[1] * scaling_factor
-#     w = box[2] * scaling_factor
-#     h = box[3] * scaling_factor
-
-#     # Finding midpoints
-#     x_center = (x + (x + w)) / 2
-#     y_center = (y + (y + h)) / 2
-
-#     # Normalization
-#     x_center = x_center / img_w
-#     y_center = y_center / img_h
-#     w = w / img_w
-#     h = h / img_h
-
-#     return [x_center, y_center, w, h]
-
-
-# def format_bboxes_yolo_to_pascal(box, im_size):
-#     # [x_center, y_center, w, h] (normalized) -> [x_min, y_min, x_max, y_max]
-#     img_w, img_h = im_size
-#     x_c, y_c, w, h = box.unbind(1)
-#     b = [(x_c - 0.5 * w), (y_c - 0.5 * h), (x_c + 0.5 * w), (y_c + 0.5 * h)]
-#     b = torch.stack(b, dim=1)
-#     b = b * torch.tensor([img_w, img_h, img_w, img_h], dtype=torch.float32).to("cuda")
-#     return b
-
-
-# def format_bboxes_coco_to_pascal(box, target_im_size=None, source_im_size=None):
-#     # [x_center, y_center, w, h] -> [x_min, y_min, x_max, y_max]
-#     if source_im_size and target_im_size:
-#         # Hypothesis: images have same w and h
-#         scaling_factor = (torch.tensor(target_im_size) / torch.tensor(source_im_size))[0]
-#     else:
-#         scaling_factor = torch.tensor(1.0)
-
-#     x_min, y_min, w, h = box.unbind(1)
-
-#     b = [x_min, y_min, (x_min + w), (y_min + h)]
-#     b = torch.stack(b, dim=1)
-#     b = b * scaling_factor
-#     return b
 
 
 def count_params(model):

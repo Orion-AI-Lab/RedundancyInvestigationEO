@@ -77,7 +77,8 @@ def train_epoch(train_loader, model, optimizer, criterion, epoch, configs, scale
             else:
                 image = image[:, desired_indices, :, :]
                 out = model((image, spectral_keys), keys=keys)
-
+            if idx == 5:  # break after the 5th batch (idx starts at 0)
+                break
             
             loss = criterion(out, label)
             running_loss += loss.item()
@@ -232,8 +233,13 @@ def test(configs, phase, model=None, loader=None, criterion=None, epoch="Test"):
     metrics = utils.initialize_metrics(configs)
     model.to(configs["device"])
     model.eval()
+    
+    # Initialize accumulation lists
+    #all_outputs = []
+    #all_labels = []
     total_loss = 0.0
     num_samples = 0
+
     for idx, batch in enumerate(tqdm.tqdm(loader)):
         with torch.no_grad():
             with torch.cuda.amp.autocast(enabled=configs["mixed_precision"]):
