@@ -1,6 +1,6 @@
 {
     "dataset": "woody", // Options: All available datasets
-    "wandb": true,
+    "wandb": false,
     "wandb_project": "RedundancyInvestigation_v2",
     "wandb_entity": "deepcube",
     "wandb_id_resume": null,

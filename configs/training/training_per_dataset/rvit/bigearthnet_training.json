@@ -1,5 +1,5 @@
 {
-    "epochs": 20,
+    "epochs": 1,
     "batch_size": 256,
     "num_workers": 4,
     "lr": 1e-4,
@@ -27,5 +27,6 @@
     "change_finetuning_resolution": null, // If not none, the finetuning vit will have its positional embedding changed to support the new res
     "finetuning_patch_size": 16, // In accordance to finetuning resolution. Ideally keep it the same as in training
     "start_epoch": 0, // epoch to continue training
-    "log_images": false, // log segmentation masks and images to wandb
+    "log_images": false,
+    "torch_compile": false // log segmentation masks and images to wandb
 }

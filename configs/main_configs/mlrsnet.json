@@ -1,7 +1,7 @@
 {
     "dataset": "mlrsnet", // Options: All available datasets
-    "wandb": false,
-    "wandb_project": "MLRSNet",
+    "wandb": true,
+    "wandb_project": "RedInv_no_pretrained_patch_size",
     "wandb_entity": "deepcube",
     "wandb_id_resume": null,
     "phase": "train",

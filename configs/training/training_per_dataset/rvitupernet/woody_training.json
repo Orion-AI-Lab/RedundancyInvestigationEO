@@ -1,5 +1,5 @@
 {
-    "epochs": 20,
+    "epochs": 1,
     "batch_size": 64,
     "num_workers": 4,
     "lr": 1e-5,
@@ -28,5 +28,6 @@
     "finetuning_patch_size": 16, // In accordance to finetuning resolution. Ideally keep it the same as in training
     "start_epoch": 0, // epoch to continue training
     "log_images": false,
-    "debug_visualization": true // log segmentation masks and images to wandb
+    "debug_visualization": false, // log segmentation masks and images to wandb
+    "torch_compile": false
 }

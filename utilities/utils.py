@@ -143,6 +143,7 @@ def load_configs(args=None):
     else:
         root_config_path = args.config
     config = json.load(open(root_config_path, "r"))
+    #print(config)
 
     if wandb_id_resume:
         config["wandb_id_resume"] = args.wandb_id_resume
@@ -288,9 +289,6 @@ def create_dataloaders(configs):
 
     train_dataset = load_dataset(configs, "train")
     val_dataset = load_dataset(configs, "val")
-
-    if configs["task"] == "mae":
-        train_dataset = torch.utils.data.ConcatDataset([train_dataset, val_dataset])
 
     test_dataset = load_dataset(configs, "test")
 
@@ -524,13 +522,13 @@ def create_webdataset_loaders(
                 ):
                     if configs["task"] == "classification":
                         image = image.permute(1, 2, 0).numpy()
-                        aug = A.Compose(
+                        aug = A.Compose([
                             A.augmentations.Resize(
                                 height=configs["enforce_resize"],
                                 width=configs["enforce_resize"],
                                 p=1.0,
                             )
-                        )(image=image)
+                        ])(image=image)
                         image = aug["image"]
                         image = einops.rearrange(image, "h w c -> c h w")
                         image = torch.from_numpy(image).float()
@@ -568,11 +566,6 @@ def create_webdataset_loaders(
                         image = torch.stack((r,g,b), dim=0)
                         mean = list(reversed(configs["mean"][2:5]))
                         std = list(reversed(configs["std"][2:5]))
-                        normalization = transforms.Normalize(mean=mean, std=std)
-                    elif configs['sar']:
-                        image = image[:2,:,:]
-                        mean = list((configs["mean"][:2]))
-                        std = list((configs["std"][:2]))
                         normalization = transforms.Normalize(mean=mean, std=std)
                 if "rgb" not in configs or (not configs['rgb'] and ('sar' not in configs or not configs['sar'])):
                     normalization = transforms.Normalize(mean=configs["mean"], std=configs["std"])

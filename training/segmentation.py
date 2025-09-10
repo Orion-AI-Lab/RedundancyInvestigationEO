@@ -46,16 +46,16 @@ def train_epoch(train_loader, model, optimizer, criterion, epoch, configs, scale
                 break
         optimizer.zero_grad()
         with torch.cuda.amp.autocast(enabled=configs["mixed_precision"]):
-            image, label = batch
+            image, label, keys = batch
             
             image = image.to(configs["device"])
             label = label.to(configs["device"])
 
             if not configs["linear_evaluation"] and not configs["fully_finetune"]:
                 if configs['architecture']!='rvitupernet':
-                    out = model(image)
+                    out = model(image, keys=keys)
                 else:
-                    out, mask = model(image,label)
+                    out, mask = model(image, label=label)
             else:
                 image = image[:, desired_indices, :, :]
 
@@ -68,6 +68,11 @@ def train_epoch(train_loader, model, optimizer, criterion, epoch, configs, scale
                 loss = masked_loss.sum()/(mask.sum().clamp(min=1))
             else:
                 loss = criterion(out, label)
+            
+            # Break after the first 50 batches for testing
+            #if idx == 50:
+            #    break
+                
         if idx % 100 == 0:
             log_dict = {"Epoch": epoch, "Iteration": idx, "train loss": loss.item()}
             if configs["wandb"]:
@@ -195,10 +200,11 @@ def test(configs, phase, model=None, loader=None, criterion=None, epoch="Test"):
                 label = label.to(configs["device"])
 
                 if not configs["linear_evaluation"] and not configs["fully_finetune"]:
-                    out = model(image,label)
+                    out = model(image, label=label)
                 else:
                     image = image[:, desired_indices, :, :]
                     out = model((image, spectral_keys))
+
                 if idx == 0:
                     predictions = out.argmax(1)
                     first_image = image.detach().cpu()[0]

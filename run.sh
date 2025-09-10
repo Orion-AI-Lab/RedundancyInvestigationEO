@@ -10,26 +10,22 @@
 #set -x
 
 # Parameter arrays
-#CLASSIFICATION
-#vit_backbones=("vit_tiny_patch16_224.augreg_in21k" "vit_small_patch16_224.augreg_in21k" "vit_base_patch16_224.augreg_in21k")
-vit_backbones=("vit_small_patch8_224")
+
+#Backbones
+vit_backbones=("vit_base_patch8_224" "vit_base_patch16_224" "vit_base_patch32_224")
+#vit_backbones=("vit_small_patch16_224")
 
 
-#SEGMENTATION
-#vit_backbones=("vit_tiny_patch16_224" "vit_small_patch16_224" "vit_base_patch16_224")
-#vit_backbones=("vit_tiny_patch16_224")
-#ekkremei max_len me small kai ta katw
 
+implementations=("topx%" "random_topx%" "max_len")
+#implementations=("topx%")
+#implementations=("max_len")
 
-#implementations=("topx%" "random_topx%" "median" "max_len")
-implementations=("topx%")
-#implementations=("median")
-
-mask_thresholds=(0.85 0.8 0.75 0.7 0.6 0.25)
-#mask_thresholds=(0.8)
+mask_thresholds=(1.0 0.85 0.8 0.75 0.7 0.6 0.25)
+#mask_thresholds=(1.0)
 #retain_percents=(85 50 40 25 15 5)
-#retain_percents=(100 85 50 40 25 15 5)
-retain_percents=(100)
+#retain_percents=(40)
+retain_percents=(100 85 50 40 25 15 5)
 
 # Fixed configuration files and seed (adjust these paths as needed)
 #main_config="configs/main_configs/bigearthnet.json"

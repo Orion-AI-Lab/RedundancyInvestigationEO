@@ -82,11 +82,16 @@ def train_epoch(train_loader, model, optimizer, criterion, epoch, configs, scale
             else:
                 image = image[:, desired_indices, :, :]
                 out = model((image, spectral_keys), keys=keys)
-            if idx == 51:  # break after the 5th batch (idx starts at 0)
-                break
+            # if idx == 51:  # break after the 5th batch (idx starts at 0)
+            #     break
             
             loss = criterion(out, label)
             running_loss += loss.item()
+            
+            # Clear GPU cache after loss computation to prevent memory issues
+            if idx % 50 == 0 and torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                
         if idx % 100 == 0:
             log_dict = {"Epoch": epoch, "Iteration": idx, "train loss": running_loss/num_samples}
             if configs["schedule"] != "none":
@@ -115,9 +120,7 @@ def train_epoch(train_loader, model, optimizer, criterion, epoch, configs, scale
                 num_steps = 10000
             adjust_learning_rate(optimizer, idx / num_steps + epoch, configs)
         
-        # Periodic memory cleanup to prevent accumulation
-        if idx % 50 == 0 and torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        # Memory cleanup moved to after loss computation
 
 
 def train(configs):
@@ -267,9 +270,7 @@ def test(configs, phase, model=None, loader=None, criterion=None, epoch="Test"):
         model.to(configs["device"])
         model.eval()
         
-        # Clear GPU cache before testing to prevent memory issues
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        # Cache clearing moved to after loss computation in the loop
         
         # Initialize accumulation lists
         #all_outputs = []
@@ -297,6 +298,10 @@ def test(configs, phase, model=None, loader=None, criterion=None, epoch="Test"):
 
                         loss = criterion(out, label)
                         total_loss += loss.item()
+                        
+                        # Clear GPU cache after loss computation to prevent memory issues
+                        if idx % 50 == 0 and torch.cuda.is_available():
+                            torch.cuda.empty_cache()
 
                         for metric in metrics:
                             if metric.__class__.__name__ == "MultilabelAveragePrecision":
