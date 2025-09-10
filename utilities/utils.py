@@ -17,23 +17,28 @@ import webdataset as wds
 from braceexpand import braceexpand
 from torchmetrics import Accuracy, F1Score, JaccardIndex, Precision, Recall, AveragePrecision
 from torchmetrics.classification import MultilabelCoverageError
+import warnings
 import albumentations as A
-
-#from torchmetrics.detection import MeanAveragePrecision, CompleteIntersectionOverUnion, IntersectionOverUnion
 
 import datasets
 import training.classification as classification
-import training.detection as detection
-import training.mae_training as mae_training
-import training.supervised_cls_foundation as supervised_cls_foundation
-import training.super_fomo_training as super_fomo_training
-
-# import training.meta_mae_training as meta_mae_training
 import training.segmentation as segmentation
-import training.point_segmentation as point_segmentation
+
 import utilities.augmentations as augmentations
 import utilities.webdataset_writer as web_writer
 
+
+class SafeAveragePrecision(AveragePrecision):
+    """Wrapper for AveragePrecision that handles nan values gracefully"""
+    
+    def compute(self):
+        with warnings.catch_warnings():
+            warnings.filterwarnings('ignore', category=UserWarning)
+            result = super().compute()
+            # Replace nan values with 0.0 for classes with no positive samples
+            if torch.is_tensor(result):
+                result = torch.nan_to_num(result, nan=0.0)
+            return result
 
 def create_checkpoint_path(configs):
     if configs["checkpoint_root_path"] is None:
@@ -65,23 +70,6 @@ def create_checkpoint_path(configs):
         checkpoint_path = (
             checkpoint_root_path / configs["task"].lower() / configs["dataset"].lower() / configs["backbone"].lower()
         )
-    # elif configs["task"] == "detection":
-    #     print("Detection WTF")
-    #     checkpoint_path = (
-    #         checkpoint_root_path
-    #         / configs["task"].lower()
-    #         / configs["dataset"].lower()
-    #         / configs["architecture"].lower()
-    #         / configs["backbone"].lower()
-    #     )
-    elif configs["task"] == "point_segmentation":
-        checkpoint_path = (
-            checkpoint_root_path
-            / configs["task"].lower()
-            / configs["dataset"].lower()
-            / configs["architecture"].lower()
-            / configs["backbone"].lower()
-        )
     elif configs["task"] == "mae":
         checkpoint_path = (
             checkpoint_root_path
@@ -106,15 +94,6 @@ def create_checkpoint_path(configs):
         checkpoint_path = (
             checkpoint_root_path / configs["task"].lower() / configs["dataset"].lower() / configs["backbone"].lower()
         )
-    elif configs['task'] == 'super_fomo':
-        checkpoint_path = (
-            checkpoint_root_path / configs["task"].lower() / configs["dataset"].lower() / configs["backbone"].lower() / ("_"
-                + str(configs["patch_size"])
-                + "_depth_"
-                + str(configs["depth"])
-                + "_heads_"
-                + str(configs["heads"]))
-            )
     else:
         print("Task not supported!")
         exit(3)
@@ -131,6 +110,7 @@ def load_config_file(path):
         print("Path: ", path, " does not exist.")
         print("Exiting")
         print("=" * 20)
+        exit(1)
     data = json.load(open(path, "r"))
     return data
 
@@ -158,7 +138,8 @@ def load_configs(args=None):
 
     # Load data related configs
     if not custom_config:
-        root_config_path = "configs/configs.json"
+        print("No valid config provided")
+        exit(1)
     else:
         root_config_path = args.config
     config = json.load(open(root_config_path, "r"))
@@ -168,6 +149,7 @@ def load_configs(args=None):
 
     # Load dataset related configs
     dataset = config["dataset"]
+    
     if not custom_dataset_config:
         dataset_config_path = "configs/datasets/" + str(dataset).lower() + ".json"
     else:
@@ -178,7 +160,9 @@ def load_configs(args=None):
 
     # Load method related configs
     if not custom_method_config:
-        method_config_path = "configs/method/" + config["task"].lower() + ".json"
+        #method_config_path = "configs/method/" + config["task"].lower() + ".json"
+        print("No valid method config provided")
+        exit(1)
     else:
         method_config_path = args.method_config
 
@@ -197,10 +181,9 @@ def load_configs(args=None):
 
     # Load training configs
     if not custom_training_config:
-        #if config["task"] == "detection":
-        #    training_configs_path = "configs/training/detection_training.json"
-        #else:
-        training_configs_path = "configs/training/training.json"
+        #training_configs_path = "configs/training/training.json"
+        print("No valid training config provided")
+        exit(1)
     else:
         training_configs_path = args.training_config
     training_configs = load_config_file(training_configs_path)
@@ -215,14 +198,13 @@ def load_configs(args=None):
 
     # Load augmentation configurations
     if config["augment"]:
-        # if config["task"] == "detection":
-        #     augmentation_configs_path = os.path.join("configs", "augmentations", "detection_augmentations.json")
-        # elif config["task"] == "point_segmentation":
-        #     augmentation_configs_path = os.path.join("configs", "augmentations", "point_augmentations.json")
-        # else:
         augmentation_configs_path = args.augmentation_config
-        augmentations_config = load_config_file(augmentation_configs_path)
-        config.update(augmentations_config)
+        if augmentation_configs_path is not None:
+            augmentations_config = load_config_file(augmentation_configs_path)
+            config.update(augmentations_config)
+        else:
+            print("Warning: augment=True but no augmentation_config provided. Using default augmentations.")
+            config["augmentations"] = {}
     else:
         config["augmentations"] = {}
     if config["device"] == "cpu":
@@ -261,64 +243,16 @@ def load_configs(args=None):
 
 
 def get_dataset(dataset_name, configs, mode):
-    if dataset_name.lower() == "reforestree":
-        dataset = datasets.ReforesTreeDataset.ReforesTreeDataset(configs, mode)
-    elif dataset_name.lower() == "yurf":
-        dataset = datasets.YURFDataset.YurfDataset(configs, mode)
-    elif dataset_name.lower() == "cactus":
-        dataset = datasets.CactusDataset.CactusDataset(configs, mode)
-    elif dataset_name.lower() == "treesatai":
-        dataset = datasets.TreeSatAIDataset.TreeSatAIDataset(configs, mode)
-    elif dataset_name.lower() == "flair":
+    if dataset_name.lower() == "flair":
         dataset = datasets.FLAIRDataset.FLAIRDataset(configs, mode)
     elif dataset_name.lower() == "flair2":
         dataset = datasets.FLAIR2Dataset.FLAIR2Dataset(configs, mode)
     elif dataset_name.lower() == "woody":
         dataset = datasets.WoodyDataset.WoodyDataset(configs, mode)
-    elif dataset_name.lower() == "forestnet":
-        dataset = datasets.ForestNetDataset.ForestNetDataset(configs, mode)
-    # elif dataset_name.lower() in ("neontree", "neontree_detection", "neontree_point_cloud"):
-    #     dataset = datasets.NeonTreeDataset.NeonTreeDataset(configs, mode)
-    elif dataset_name.lower() == "spekboom":
-        dataset = datasets.SpekboomDataset.SpekboomDataset(configs, mode)
     elif dataset_name.lower() == "waititu":
         dataset = datasets.WaitituDataset.WaitituDataset(configs, mode)
     elif dataset_name.lower() == "bigearthnet":
         dataset = datasets.BigEarthNetDataset.BigEarthNetDataset(configs, mode)
-    elif dataset_name.lower() == "sen12ms":
-        dataset = datasets.Sen12MSDataset.Sen12MSDataset(configs, mode)
-    elif dataset_name.lower() == "glad":
-        dataset = datasets.GLADDataset.GLADDataset(configs, mode)
-    elif dataset_name.lower() == "rapidai4eo":
-        dataset = datasets.RapidAI4EODataset.RapidAI4EODataset(configs, mode)
-    elif dataset_name.lower() == "tallos":
-        dataset = datasets.TallosDataset.TallosDataset(configs, mode)
-    elif dataset_name.lower() == "ssl4eol":
-        dataset = datasets.SSL4EOLDataset.SSL4EOL(configs, mode)
-    elif dataset_name.lower() == "ssl4eos1s2":
-        dataset = datasets.SSL4EOS1S2Dataset.SSL4EOS1S2(configs, mode)
-    elif dataset_name.lower() == "fivebillionpixels":
-        dataset = datasets.FiveBillionPixelsDataset.FiveBillionPixelsDataset(configs, mode)
-    elif dataset_name.lower() == "forinstance":
-        dataset = datasets.FORinstanceDataset.FORinstanceDataset(configs, mode)
-    # elif dataset_name.lower() == "mixed_detection":
-    #     if mode == 'test':
-    #         dataset = list()
-    #         dataset_names = configs['dataset_names'].split(',')
-    #         for dataset_name in dataset_names:
-    #             dataset.append(datasets.MixedDetectionDataset.MixedDetectionDataset(configs, mode,
-    #                                                                                 test_on=dataset_name))
-    #     else:
-    #         dataset = datasets.MixedDetectionDataset.MixedDetectionDataset(configs, mode)
-    # elif dataset_name.lower() == "mixed_pointcloud":
-    #     if mode == 'test':
-    #         dataset = list()
-    #         dataset_names = configs['dataset_names'].split(',')
-    #         for dataset_name in dataset_names:
-    #             dataset.append(datasets.MixedPCSegDataset.MixedPCSegDataset(configs, mode,
-    #                                                                         test_on=dataset_name))
-    #     else:
-    #         dataset = datasets.MixedPCSegDataset.MixedPCSegDataset(configs, mode)
     else:
         print("Dataset not supported")
         exit(2)
@@ -347,9 +281,7 @@ def load_dataset(configs, mode):
 def create_dataloaders(configs):
     if "webdataset" in configs:
         if configs["webdataset"]:
-            if configs["dataset"] == "supervised_foundation_cls" or configs['dataset']=='super_fomo':
-                return create_universal_supervised_webdataset_loader(configs)
-            elif configs["dataset"] != "all":
+            if configs["dataset"] != "all":
                 return create_webdataset_loaders(configs)
             else:
                 return create_universal_webdataset_loader(configs)
@@ -574,24 +506,9 @@ def create_webdataset_loaders(
                 label[label==-1] = 11
             if configs['dataset']=='mlrsnet':
                     label = label.float()
-            if configs['dataset']=='tallos':
-                image[image>3e38] = 0.0
-                image = torch.nan_to_num(image,nan=0.0)            
-                image[torch.isinf(image)] = 0.0
-            
-            if configs['dataset']=='sen12ms':
-                label[label>=configs['threshold']] = 1
-                label[label<configs['threshold']] = 0
-            if configs['dataset'] == 'treesatai' and 's1_60m' in configs['data_source']:
-                image = image[:2, :, :]
-
-            
               
             if isinstance(label, dict):
                 label = label["label"]
-                if configs["dataset"] == "rapidai4eo":
-                    label[label >= configs["class_threshold"]] = 1
-                    label[label < configs["class_threshold"]] = 0
 
                 if configs['dataset']=='mlrsnet':
                     labels = labels.float()
@@ -634,15 +551,10 @@ def create_webdataset_loaders(
                         image = torch.from_numpy(image).float()
                         label = torch.from_numpy(label).long()
 
-            if configs["dataset"] == "uav" or configs["dataset"] == "woody":
+            if configs["dataset"] == "woody":
                 # Remove alpha channel from combined uav datasets (Some have it some don't)
                 image = image[:3, :, :]
             if configs["normalization"] == "minmax":
-                if configs["dataset"] == "sen12ms":
-                    s1 = image[:2, :, :] / 25 + 1
-                    s2 = image[2:, :, :] / 10000
-                    image = torch.cat((s1, s2), dim=0)
-                else:
                     image /= image.max() + 1e-6
             elif configs["normalization"] == "standard":
                 if "mean" not in configs or "std" not in configs:
@@ -656,15 +568,6 @@ def create_webdataset_loaders(
                         image = torch.stack((r,g,b), dim=0)
                         mean = list(reversed(configs["mean"][2:5]))
                         std = list(reversed(configs["std"][2:5]))
-                        normalization = transforms.Normalize(mean=mean, std=std)
-                if configs["dataset"] == "sen12ms":
-                    if configs['rgb']:
-                        r = image[5,:,:]
-                        g = image[4,:,:]
-                        b = image[3,:,:]
-                        image = torch.stack((r,g,b), dim=0)
-                        mean = list(reversed(configs["mean"][3:6]))
-                        std = list(reversed(configs["std"][3:6]))
                         normalization = transforms.Normalize(mean=mean, std=std)
                     elif configs['sar']:
                         image = image[:2,:,:]
@@ -911,25 +814,6 @@ def initialize_metrics(configs):
     metrics = []
     for metric in configs["metrics"]:
         for metric_aggregation_strategy in configs["metric_aggregation_strategy"]:
-            # if configs["task"] == "detection":
-            #     det_format = configs["det_format"]
-            #     if det_format == "pascal_voc":
-            #         box_format = "xyxy"
-            #     elif det_format == "coco":
-            #         box_format = "xywh"
-            #     elif det_format == "yolo":
-            #         box_format = "cxcywh"
-            #     else:
-            #         raise Exception("Detection format {} is not supported".format(det_format))
-            #     if metric.lower() == "iou":
-            #         m = IntersectionOverUnion(box_format=box_format, iou_threshold=0.3, class_metrics=True)
-            #     elif metric.lower() == "ciou":
-            #         m = CompleteIntersectionOverUnion(box_format=box_format, iou_threshold=0.3, class_metrics=True)
-            #     elif metric.lower() == "map":
-            #         m = MeanAveragePrecision(box_format=box_format, iou_type="bbox", class_metrics=True)
-            #     else:
-            #         print("Metric: ", metric, " not supported!")
-            #         continue
             if configs["multilabel"]:
                 if metric.lower() == "accuracy":
                     m = Accuracy(
@@ -968,8 +852,12 @@ def initialize_metrics(configs):
                 elif metric.lower() == "coverage":
                     m = MultilabelCoverageError(num_labels=configs["num_classes"]).to(configs["device"])
                 elif metric.lower() == "map":
-                    m = AveragePrecision(
-                        task="multilabel", num_labels=configs["num_classes"], average=metric_aggregation_strategy
+                    m = SafeAveragePrecision(
+                        task="multilabel", 
+                        num_labels=configs["num_classes"], 
+                        average=metric_aggregation_strategy,
+                        validate_args=False,
+                        thresholds=None
                     ).to(configs["device"])
                 else:
                     print("Metric: ", metric, " not supported!")
@@ -1043,22 +931,6 @@ def create_procedures(configs):
     elif configs["task"] == "segmentation":
         trainer = segmentation.train
         tester = segmentation.test
-    elif configs["task"] == "point_segmentation":
-        trainer = point_segmentation.train
-        tester = point_segmentation.test
-    # elif configs["task"] == "detection":
-    #     trainer = detection.train
-    #     tester = detection.test
-    elif configs["task"] == "mae":
-        trainer = mae_training.train
-        tester = None
-    elif configs["task"] == "supervised_foundation":
-        trainer = supervised_cls_foundation.train
-        tester = None
-    elif configs["task"] == "super_fomo":
-        print("INIT TASK SUPERFOMO")
-        trainer = super_fomo_training.train
-        tester = None
     else:
         print("AAAAAA")
         print("Task: ", configs["task"], " not supported.")
@@ -1067,26 +939,9 @@ def create_procedures(configs):
     return trainer, tester
 
 
-def create_image_processor(configs):
-    if configs["architecture"] == "yolos":
-        from transformers import YolosImageProcessor
-
-        image_processor = YolosImageProcessor.from_pretrained(
-            "hustvl/yolos-small", num_labels=configs["num_classes"], ignore_mismatched_sizes=True, do_normalize=True
-        )
-    elif configs["backbone"] == "dinov2":
-        from transformers import AutoImageProcessor
-
-        image_processor = AutoImageProcessor.from_pretrained("facebook/dinov2-base")
-    else:
-        image_processor = None
-    return image_processor
-
-
-# def apply_nms(orig_prediction, iou_thresh=0.3):
-#     """NMS threshold for detection evaluation"""
-#     # torchvision returns the indices of the bboxes to keep
-#     keep = torchvision.ops.nms(orig_prediction["boxes"], orig_prediction["scores"], iou_thresh)
+# def apply_conf(orig_prediction, conf_thresh=0.3):
+#     """Confidence threshold for detection evaluation"""
+#     keep = orig_prediction["scores"] > conf_thresh
 #     final_prediction = orig_prediction
 #     final_prediction["boxes"] = final_prediction["boxes"][keep]
 #     final_prediction["scores"] = final_prediction["scores"][keep]
@@ -1094,24 +949,14 @@ def create_image_processor(configs):
 #     return final_prediction
 
 
-def apply_conf(orig_prediction, conf_thresh=0.3):
-    """Confidence threshold for detection evaluation"""
-    keep = orig_prediction["scores"] > conf_thresh
-    final_prediction = orig_prediction
-    final_prediction["boxes"] = final_prediction["boxes"][keep]
-    final_prediction["scores"] = final_prediction["scores"][keep]
-    final_prediction["labels"] = final_prediction["labels"][keep]
-    return final_prediction
-
-
-def apply_class_filter(orig_prediction, class_to_filter=0):
-    """Confidence threshold for detection evaluation"""
-    keep = orig_prediction["labels"] != class_to_filter
-    final_prediction = orig_prediction
-    final_prediction["boxes"] = final_prediction["boxes"][keep]
-    final_prediction["scores"] = final_prediction["scores"][keep]
-    final_prediction["labels"] = final_prediction["labels"][keep]
-    return final_prediction
+# def apply_class_filter(orig_prediction, class_to_filter=0):
+#     """Confidence threshold for detection evaluation"""
+#     keep = orig_prediction["labels"] != class_to_filter
+#     final_prediction = orig_prediction
+#     final_prediction["boxes"] = final_prediction["boxes"][keep]
+#     final_prediction["scores"] = final_prediction["scores"][keep]
+#     final_prediction["labels"] = final_prediction["labels"][keep]
+#     return final_prediction
 
 
 def count_params(model):

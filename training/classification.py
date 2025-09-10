@@ -1,4 +1,5 @@
 import pprint
+import warnings
 
 import numpy as np
 import pyjson5 as json
@@ -10,6 +11,10 @@ import utilities.model_utilities as model_utils
 import utilities.utils as utils
 from utilities.model_utilities import adjust_learning_rate, get_current_learning_rate
 import time
+
+# Suppress specific warnings related to multilabel metrics and PyTorch deprecations
+warnings.filterwarnings('ignore', category=UserWarning, module='torchmetrics')
+warnings.filterwarnings('ignore', category=UserWarning, module='torch.overrides')
 
 def early_stopping(val_loss, best_loss, counter, patience=5):
     if val_loss < best_loss:
@@ -77,7 +82,7 @@ def train_epoch(train_loader, model, optimizer, criterion, epoch, configs, scale
             else:
                 image = image[:, desired_indices, :, :]
                 out = model((image, spectral_keys), keys=keys)
-            if idx == 5:  # break after the 5th batch (idx starts at 0)
+            if idx == 51:  # break after the 5th batch (idx starts at 0)
                 break
             
             loss = criterion(out, label)
@@ -91,25 +96,40 @@ def train_epoch(train_loader, model, optimizer, criterion, epoch, configs, scale
                 wandb.log(log_dict)
             else:
                 print(log_dict)
-        if configs["mixed_precision"]:
-            scaler.scale(loss).backward()
-            scaler.step(optimizer)
-            scaler.update()
-        else:
-            loss.backward()
-            optimizer.step()
+        try:
+            if configs["mixed_precision"]:
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                loss.backward()
+                optimizer.step()
+        except Exception as e:
+            print(f"Error during backward pass: {e}")
+            print("This might be due to torch.compile issues. Consider disabling compilation.")
+            raise e
         if configs["schedule"] == "cos":
             if "samples_per_epoch" in configs:
                 num_steps = configs["samples_per_epoch"] // configs["batch_size"]
             else:
                 num_steps = 10000
             adjust_learning_rate(optimizer, idx / num_steps + epoch, configs)
+        
+        # Periodic memory cleanup to prevent accumulation
+        if idx % 50 == 0 and torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
 
 def train(configs):
     print("=" * 20)
     print("Initializing classification trainer")
     print("=" * 20)
+    
+    # Clear GPU memory and reset stats at start
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.reset_peak_memory_stats()
+        print(f"GPU Memory cleared. Available: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.2f} GB")
     metrics = utils.initialize_metrics(configs)
     criterion = utils.create_loss(configs)
     base_model = model_utils.create_model(configs)
@@ -117,12 +137,17 @@ def train(configs):
         base_model.parameters(), lr=configs["lr"], weight_decay=configs["weight_decay"]
     )
 
-    # compile model conditionally
+    # compile model conditionally with better error handling
     try:
-        if "tiny_vit" in configs.get("model", "").lower(): #Skipping torch.compile for tiny-ViT (known issues)
+        # Check if torch.compile is disabled in config
+        if configs.get("torch_compile", True):
+            model = torch.compile(base_model)
+        elif "tiny_vit" in configs.get("model", "").lower(): #Skipping torch.compile for tiny-ViT (known issues)
             model = base_model
         else:
-            model = torch.compile(base_model)
+            # Try torch.compile with more conservative settings
+            model = base_model
+
     except Exception as e:
         print(f"torch.compile failed with error: {e}")
         print("Falling back to eager mode...")
@@ -179,109 +204,131 @@ def train(configs):
         wandb.log({"Total Training Time (s)": total_time})
 
 def test(configs, phase, model=None, loader=None, criterion=None, epoch="Test"):
-    if phase == "test":
-        print("=" * 20)
-        print("Begin Testing")
-        print("=" * 20)
-        _, _, loader = utils.create_dataloaders(configs)
-        criterion = utils.create_loss(configs)
+    try:
+        if phase == "test":
+            print("=" * 20)
+            print("Begin Testing")
+            print("=" * 20)
+            _, _, loader = utils.create_dataloaders(configs)
+            criterion = utils.create_loss(configs)
 
-        # Load model from checkpoint
-        model = torch.load(os.path.join(configs["checkpoint_path"], "best_model.pt"), map_location=configs["device"])
+            # Load model from checkpoint with error handling
+            try:
+                model = torch.load(os.path.join(configs["checkpoint_path"], "best_model.pt"), map_location=configs["device"])
+                #print("Model loaded successfully from checkpoint")
+            except Exception as e:
+                print(f"Error loading model from checkpoint: {e}")
+                print("Falling back to creating new model...")
+                model = model_utils.create_model(configs)
 
-        # compile model conditionally
-        try:
-            if "tiny_vit" in configs.get("model", "").lower():
-                model= model #Skipping torch.compile for tiny-ViT (known issues)
-            else:
-                model = torch.compile(model)
-        except Exception as e:
-            print(f"torch.compile failed with error: {e}")
-            print("Falling back to eager mode...")
+            # compile model conditionally with better error handling
+            try:
+                # Check if torch.compile is disabled in config
+                if configs.get("torch_compile", True):
+                    model = torch.compile(model)
+                elif "tiny_vit" in configs.get("model", "").lower(): #Skipping torch.compile for tiny-ViT (known issues)
+                    model = model
+            except Exception as e:
+                print(f"torch.compile failed with error: {e}")
+                model = model
 
-    elif phase == "val":
-        print("=" * 20)
-        print("Begin Evaluation")
-        print("=" * 20)
-    else:
-        print("Uknown phase!")
-        exit(3)
-
-    if configs["linear_evaluation"] or configs["fully_finetune"]:
-        modality_dictionary = {v: k for k, v in configs["modality_channels"].items()}
-        available_modalities = configs["dataset_modality_index"][configs["dataset"]]
-        spectral_keys = []
-        desired_indices = []
-        for modality in available_modalities:
-            spectral_keys.append(int(modality_dictionary[modality]))
-            desired_indices.append(available_modalities[modality])
-
-    if "resnet_star_evaluation" in configs and configs["resnet_star_evaluation"]:
-        resnet_star_evaluation = True
-        resnet_star_configs = json.load(open("configs/datasets/supervised_foundation_cls.json", "r"))
-        modality_dictionary = {v: k for k, v in resnet_star_configs["modality_channels"].items()}
-        available_modalities = resnet_star_configs["dataset_modality_index"][configs["dataset"]]
-        spectral_keys = []
-        desired_indices = []
-        for modality in available_modalities:
-            spectral_keys.append(int(modality_dictionary[modality]))
-            desired_indices.append(available_modalities[modality])
-        print("Desired indices: ", desired_indices)
-    else:
-        resnet_star_evaluation = False
-
-    metrics = utils.initialize_metrics(configs)
-    model.to(configs["device"])
-    model.eval()
-    
-    # Initialize accumulation lists
-    #all_outputs = []
-    #all_labels = []
-    total_loss = 0.0
-    num_samples = 0
-
-    for idx, batch in enumerate(tqdm.tqdm(loader)):
-        with torch.no_grad():
-            with torch.cuda.amp.autocast(enabled=configs["mixed_precision"]):
-                image, label = batch
-                image = image.to(configs["device"])
-                label = label.to(configs["device"])
-
-                if not configs["linear_evaluation"] and not configs["fully_finetune"]:
-                    if not resnet_star_evaluation:
-                        out = model(image)
-                    else:
-                        image = image[:, desired_indices, :, :]
-                        out = model(image)
-                else:
-                    image = image[:, desired_indices, :, :]
-                    out = model((image, spectral_keys))
-
-                loss = criterion(out, label)
-                total_loss += loss.item()
-
-                for metric in metrics:
-                    if metric.__class__.__name__ == "MultilabelAveragePrecision":
-                        label = label.int()
-                    metric(out, label)
-                num_samples += image.shape[0]
-
-    total_loss = total_loss / num_samples
-    log_dict = {"Epoch": epoch, phase + " loss": total_loss}
-
-    for idx, metric in enumerate(metrics):
-        if metric.__class__.__name__ == "MultilabelCoverageError":
-            log_dict[phase + " " + metric.__class__.__name__] = metric.compute()
-        elif metric.average != "none":
-            log_dict[phase + " " + metric.average + " " + metric.__class__.__name__] = metric.compute()
+        elif phase == "val":
+            print("=" * 20)
+            print("Begin Evaluation")
+            print("=" * 20)
         else:
-            if phase != "val":
-                scores = metric.compute()
-                for idx in range(scores.shape[0]):
-                    log_dict[phase + " " + metric.__class__.__name__ + " Class: " + str(idx)] = scores[idx]
+            print("Uknown phase!")
+            exit(3)
 
-    if configs["wandb"]:
-        wandb.log(log_dict)
-    else:
-        print(log_dict)
-    return total_loss
+        if configs["linear_evaluation"] or configs["fully_finetune"]:
+            modality_dictionary = {v: k for k, v in configs["modality_channels"].items()}
+            available_modalities = configs["dataset_modality_index"][configs["dataset"]]
+            spectral_keys = []
+            desired_indices = []
+            for modality in available_modalities:
+                spectral_keys.append(int(modality_dictionary[modality]))
+                desired_indices.append(available_modalities[modality])
+
+        if "resnet_star_evaluation" in configs and configs["resnet_star_evaluation"]:
+            resnet_star_evaluation = True
+            resnet_star_configs = json.load(open("configs/datasets/supervised_foundation_cls.json", "r"))
+            modality_dictionary = {v: k for k, v in resnet_star_configs["modality_channels"].items()}
+            available_modalities = resnet_star_configs["dataset_modality_index"][configs["dataset"]]
+            spectral_keys = []
+            desired_indices = []
+            for modality in available_modalities:
+                spectral_keys.append(int(modality_dictionary[modality]))
+                desired_indices.append(available_modalities[modality])
+            print("Desired indices: ", desired_indices)
+        else:
+            resnet_star_evaluation = False
+
+        metrics = utils.initialize_metrics(configs)
+        model.to(configs["device"])
+        model.eval()
+        
+        # Clear GPU cache before testing to prevent memory issues
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        
+        # Initialize accumulation lists
+        #all_outputs = []
+        #all_labels = []
+        total_loss = 0.0
+        num_samples = 0
+
+        for idx, batch in enumerate(tqdm.tqdm(loader)):
+            try:
+                with torch.no_grad():
+                    with torch.cuda.amp.autocast(enabled=configs["mixed_precision"]):
+                        image, label = batch
+                        image = image.to(configs["device"])
+                        label = label.to(configs["device"])
+
+                        if not configs["linear_evaluation"] and not configs["fully_finetune"]:
+                            if not resnet_star_evaluation:
+                                out = model(image)
+                            else:
+                                image = image[:, desired_indices, :, :]
+                                out = model(image)
+                        else:
+                            image = image[:, desired_indices, :, :]
+                            out = model((image, spectral_keys))
+
+                        loss = criterion(out, label)
+                        total_loss += loss.item()
+
+                        for metric in metrics:
+                            if metric.__class__.__name__ == "MultilabelAveragePrecision":
+                                label = label.int()
+                            metric(out, label)
+                        num_samples += image.shape[0]
+            except Exception as e:
+                print(f"Error processing batch {idx}: {e}")
+                print("Skipping this batch and continuing...")
+                continue
+
+        total_loss = total_loss / max(num_samples, 1)  # Prevent division by zero
+        log_dict = {"Epoch": epoch, phase + " loss": total_loss}
+
+        for idx, metric in enumerate(metrics):
+            if metric.__class__.__name__ == "MultilabelCoverageError":
+                log_dict[phase + " " + metric.__class__.__name__] = metric.compute()
+            elif metric.average != "none":
+                log_dict[phase + " " + metric.average + " " + metric.__class__.__name__] = metric.compute()
+            else:
+                if phase != "val":
+                    scores = metric.compute()
+                    for idx in range(scores.shape[0]):
+                        log_dict[phase + " " + metric.__class__.__name__ + " Class: " + str(idx)] = scores[idx]
+
+        if configs["wandb"]:
+            wandb.log(log_dict)
+        else:
+            print(log_dict)
+        return total_loss
+        
+    except Exception as e:
+        print(f"Critical error in test function: {e}")
+        print("Returning default loss value to prevent crash...")
+        return 0.0

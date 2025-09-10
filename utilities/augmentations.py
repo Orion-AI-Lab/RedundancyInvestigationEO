@@ -1,5 +1,5 @@
 import albumentations as A
-import torch_geometric.transforms as T
+#import torch_geometric.transforms as T
 
 def get_augmentations(config):
     augmentations = config["augmentations"]
@@ -36,24 +36,20 @@ def get_augmentations(config):
             aug = A.augmentations.GaussNoise(p=v["p"])
         elif k == "MultNoise":
             aug = A.augmentations.MultiplicativeNoise(p=v["p"])
-        elif k == "SamplePoints":
-            aug = T.SamplePoints(num=v["num"], remove_faces=v["remove_faces"],
-                                 include_normals=v["include_normals"])
-        elif k == "RandomJitter":
-            aug = T.RandomJitter(translate=v["translate"])
-        elif k == "RandomRotate_x":
-            aug = T.RandomRotate(degrees=v["degrees"], axis=0)
-        elif k == "RandomRotate_y":
-            aug = T.RandomRotate(degrees=v["degrees"], axis=1)
-        elif k == "RandomRotate_z":
-            aug = T.RandomRotate(degrees=v["degrees"], axis=2)
+        # elif k == "SamplePoints":
+        #     aug = T.SamplePoints(num=v["num"], remove_faces=v["remove_faces"],
+        #                          include_normals=v["include_normals"])
+        # elif k == "RandomJitter":
+        #     aug = T.RandomJitter(translate=v["translate"])
+        # elif k == "RandomRotate_x":
+        #     aug = T.RandomRotate(degrees=v["degrees"], axis=0)
+        # elif k == "RandomRotate_y":
+        #     aug = T.RandomRotate(degrees=v["degrees"], axis=1)
+        # elif k == "RandomRotate_z":
+        #     aug = T.RandomRotate(degrees=v["degrees"], axis=2)
         else:
             print('Augmentation: ',k,' not supported!')
             exit(2)
         independend_aug.append(aug)
-    if task == 'detection':
-        return A.Compose(independend_aug, bbox_params=A.BboxParams(format=config['det_format'], min_visibility=0.01,
-                                                                   label_fields=['class_labels']))
-    elif task == 'point_segmentation':
-        return T.Compose(independend_aug)
+
     return A.Compose(independend_aug)

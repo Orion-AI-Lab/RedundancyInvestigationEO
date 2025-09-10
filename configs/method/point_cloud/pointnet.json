@@ -1,5 +1,0 @@
-{
-    "architecture":"pointnet",
-    "backbone":"none",
-    "pretrained":false
-}

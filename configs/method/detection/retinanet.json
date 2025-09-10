@@ -1,5 +1,0 @@
-{
-    "architecture":"retinanet",
-    "backbone":"resnet50",
-    "pretrained":true
-}

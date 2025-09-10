@@ -1,9 +1,0 @@
-{
-    "root_path":"/network/scratch/n/nikolaos.bountos/Forests/NeonTree",
-    "task":"detection", // Possible Tasks: Depending on the dataset,
-    "num_classes":2,
-    "in_channels":3,
-    "modality":"rgb",
-    "metrics":["iou","ciou","map"],
-    "meta_info":""
-}

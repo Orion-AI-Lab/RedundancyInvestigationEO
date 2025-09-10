@@ -99,4 +99,4 @@ for backbone in "${vit_backbones[@]}"; do
   done
 done
 
-echo "All experiments completed successfully."
+echo "End of experiments. Thank you for your patience!"

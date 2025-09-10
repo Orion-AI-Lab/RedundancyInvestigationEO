@@ -1,8 +1,0 @@
-{
-    "root_path":"/home/nbountos/shared_storage/nbountos/datasets/Forests/",
-    "task":"classification", // Possible Tasks: Depending on the dataset,
-    "metrics": ["accuracy","fscore"], //Desired metrics to log
-    "num_classes":2,
-    "in_channels":3,
-    "meta_info":""
-}
