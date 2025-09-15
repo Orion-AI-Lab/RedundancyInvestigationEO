@@ -1,14 +1,14 @@
 import torch
 import timm
 from timm.layers import PatchEmbed
-from timm.layers.format import Format, nchw_to
+#from timm.layers.format import Format, nchw_to
 from torch import nn
 import torch.nn.functional as F
 import einops
 import wandb
-import numpy as np
-import matplotlib.pyplot as plt
-
+#import numpy as np
+#import matplotlib.pyplot as plt
+undefined_variables = 1
 class RViT(nn.Module):
     def __init__(self, num_classes, backbone, image_size, num_channels, pretrained=True, mask_threshold=0.9,mask_in_token_space=True, implementation="max_len", pad_value=0.0, retain_percent=0,attention_mask=False, hierarchical_features=False):
         """
@@ -39,6 +39,7 @@ class RViT(nn.Module):
 
         if not self.attention_mask:
             self.model = timm.create_model(backbone,in_chans = num_channels, num_classes=num_classes, img_size=image_size, dynamic_img_pad=True, dynamic_img_size=True,pretrained=pretrained)
+            #self.model.patch_embed.set_input_size(image_size, patch_size=patch_size)
         else:
             from model_zoo import MaskAttentionViT as MaskAttentionViT
 
@@ -47,7 +48,9 @@ class RViT(nn.Module):
                                 "Change the attention_mask to False or the implementation to max_len")
 
             self.model = timm.create_model(backbone, img_size=image_size, num_classes=num_classes, dynamic_img_pad=True, dynamic_img_size=True, in_chans=num_channels, pretrained=pretrained)
-        
+            #self.model.patch_embed.set_input_size(image_size, patch_size)
+            
+
         #Ensure padding implementation is provided
         self.num_blocks = len(self.model.blocks) 
         if self.hierarchical_features:
@@ -176,7 +179,7 @@ class RViT(nn.Module):
         cos_sim = self.batch_cos_similarity(out)
         
         keep_mask = self.get_mask_vectorised(cos_sim)
-        print("Checkpoint1", keep_mask[1,:].tolist())
+        # print("Checkpoint1", keep_mask[1,:].tolist())  # Commented out for torch.compile compatibility
         #Keep mask per row sum
         retained_tokens = [x[i, keep_mask[i]] for i in range(x.shape[0])]
 
@@ -185,7 +188,7 @@ class RViT(nn.Module):
 
         # Count the number of tokens retained for each sample
         retained_counts = keep_mask.sum(dim=1).tolist()
-        print("Retained tokens per sample:", retained_counts)
+        # print("Retained tokens per sample:", retained_counts)  # Commented out for torch.compile compatibility
 
         
         # Get max length (instead of median)
@@ -221,11 +224,12 @@ class RViT(nn.Module):
         unmasked_ratio = unmasked_patches_in_batch / (x.shape[0] * (x.shape[1] - 1))
 
         if verbose:
-            print("X shape: ", padded_x.shape)
-            print("Keep mask shape: ", keep_mask.shape)
-            print("Masked in batch: ", masked_patches_in_batch)
-            print("Masked ratio: ", masked_ratio)
-            print(x.shape)
+            # print("X shape: ", padded_x.shape)  # Commented out for torch.compile compatibility
+            # print("Keep mask shape: ", keep_mask.shape)  # Commented out for torch.compile compatibility
+            # print("Masked in batch: ", masked_patches_in_batch)  # Commented out for torch.compile compatibility
+            # print("Masked ratio: ", masked_ratio)  # Commented out for torch.compile compatibility
+            # print(x.shape)  # Commented out for torch.compile compatibility
+            pass
         if wandb.run:
             wandb.log({"unmasked_patches_ratio":unmasked_ratio})
         return x
@@ -255,7 +259,7 @@ class RViT(nn.Module):
         Returns:
             A tensor of shape (batch,k) containing the indices of the top k tokens for each sample.
         """
-        mask = ~torch.eye(cos_sim.shape[1], dtype=bool, device=cos_sim.device)
+        mask = ~torch.eye(cos_sim.shape[1], dtype=torch.bool, device=cos_sim.device)
         masked_similarities = cos_sim * mask.unsqueeze(0)
         mean_similarities = masked_similarities.sum(dim=2) / (cos_sim.shape[1] - 1)
         tok_k_indices = torch.topk(-mean_similarities, k, dim=1).indices
@@ -503,7 +507,7 @@ class RViT(nn.Module):
                     wandb.log({"total_patches": total_patches})
 
         # Re-add CLS token if necessary
-        if self.model.global_pool == 'token':
+        if self.model.global_pool == 'token' and cls_token is not None:
                 cls_token = cls_token.expand(x.shape[0], -1, -1)
                 x = torch.cat([cls_token, x], dim=1)
     

@@ -7,7 +7,7 @@ import torch
 import torch.nn as nn
 from torchsummary import summary
 import einops
-from timm.models.layers import PatchEmbed
+#from timm.models.layers import PatchEmbed
 from model_zoo import RViT, RViTUPerNet ,upernet 
 import yaml
 from pathlib import Path
@@ -40,15 +40,18 @@ def create_classifier(configs):
             implementation=configs['implementation'], 
             pad_value = configs['pad_value'], 
             retain_percent=configs['retain_percent'], 
-            attention_mask=configs['attention_mask'])
+            attention_mask=configs['attention_mask'],
+            #patch_size=configs['patch_size'])
             #rvit=configs['rvit'])
+        )
     else:
         model = timm.create_model(
             configs["backbone"].lower(),
             pretrained=configs["pretrained"],
             in_chans=configs["in_channels"],
             num_classes=configs["num_classes"],
-            img_size=configs["image_size"], dynamic_img_pad=True, dynamic_img_size=True
+            img_size=configs["image_size"], dynamic_img_pad=True, dynamic_img_size=True,
+            #patch_size=configs["patch_size"]
         )
         return model
     return model

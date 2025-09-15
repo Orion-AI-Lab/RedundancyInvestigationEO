@@ -89,6 +89,7 @@ if __name__ == "__main__":
     parser.add_argument("--attention_mask", default=None, type=str2bool)
     parser.add_argument("--retain_percent", default=None, type=int)
     parser.add_argument("--backbone", default=None, type=str)
+    #parser.add_argument("--patch_size", default=None, type=int)
 
     args = parser.parse_args()
 

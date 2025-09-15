@@ -1,5 +1,5 @@
 {
-    "backbone": "vit_base_patch16_224.augreg_in21k",
+    "backbone": "vit_base_patch16_224",
     "mask_threshold": 0,
     "rvit": true,
     "mask_in_token_space": false,
@@ -7,5 +7,6 @@
     "retain_percent": 2,
     "pad_value": 0.0,
     "attention_mask": false,
-    "pretrained": true
+    "pretrained": false //,
+    //"patch_size": 64
 }

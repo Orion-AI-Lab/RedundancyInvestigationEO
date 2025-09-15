@@ -1,6 +1,6 @@
 {
-    "epochs": 1,
-    "batch_size": 256,
+    "epochs": 20,
+    "batch_size": 2048,
     "num_workers": 4,
     "lr": 1e-4,
     "weight_decay": 1e-4,
@@ -20,6 +20,7 @@
     "pin_memory": true,
     "prefetch_factor": 2,
     "persistent_workers": false,
+    "fully_finetune": false,
     "linear_evaluation": false, // set to true to evaluate a pretrained model
     "pretrained_model_path": "/home/mila/n/nikolaos.bountos/Projects/Forest-Monitoring-Benchmark/checkpoints/mae/all/vit_patch_16_depth_12_heads_6/mask_ratio_0.75/vit_103.pt", //path for the checkpoint to be evaluated under the linear eval protocol
     "resume_checkpoint_path": null, // checkpoint to resume training

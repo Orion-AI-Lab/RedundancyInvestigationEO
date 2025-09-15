@@ -234,12 +234,6 @@ def load_configs(args=None):
             "dataset_modality_index": multimodal_mae_config["dataset_modality_index"],
         }
         config.update(mae_config)
-        if "multiple_transformation" in config and config["multiple_transformation"]:
-            config["backbone"] = "FoMo-Multi"
-            config["architecture"] = "FoMoNet"
-        else:
-            config["backbone"] = "FoMo-Single"
-            config["architecture"] = "FoMoNet"
     return config
 
 
@@ -930,26 +924,6 @@ def create_procedures(configs):
         exit(3)
 
     return trainer, tester
-
-
-# def apply_conf(orig_prediction, conf_thresh=0.3):
-#     """Confidence threshold for detection evaluation"""
-#     keep = orig_prediction["scores"] > conf_thresh
-#     final_prediction = orig_prediction
-#     final_prediction["boxes"] = final_prediction["boxes"][keep]
-#     final_prediction["scores"] = final_prediction["scores"][keep]
-#     final_prediction["labels"] = final_prediction["labels"][keep]
-#     return final_prediction
-
-
-# def apply_class_filter(orig_prediction, class_to_filter=0):
-#     """Confidence threshold for detection evaluation"""
-#     keep = orig_prediction["labels"] != class_to_filter
-#     final_prediction = orig_prediction
-#     final_prediction["boxes"] = final_prediction["boxes"][keep]
-#     final_prediction["scores"] = final_prediction["scores"][keep]
-#     final_prediction["labels"] = final_prediction["labels"][keep]
-#     return final_prediction
 
 
 def count_params(model):

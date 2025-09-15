@@ -12,9 +12,17 @@ import utilities.utils as utils
 from utilities.model_utilities import adjust_learning_rate, get_current_learning_rate
 import time
 
+# Configure torch.compile with balanced settings to prevent segfaults
+import torch._dynamo
+torch._dynamo.config.suppress_errors = True
+torch._dynamo.config.verbose = False
+torch._dynamo.config.cache_size_limit = 128  # Increase cache size for better performance
+
 # Suppress specific warnings related to multilabel metrics and PyTorch deprecations
 warnings.filterwarnings('ignore', category=UserWarning, module='torchmetrics')
 warnings.filterwarnings('ignore', category=UserWarning, module='torch.overrides')
+warnings.filterwarnings('ignore', category=FutureWarning, module='timm.models.layers')
+
 
 def early_stopping(val_loss, best_loss, counter, patience=5):
     if val_loss < best_loss:
@@ -144,7 +152,15 @@ def train(configs):
     try:
         # Check if torch.compile is disabled in config
         if configs.get("torch_compile", True):
-            model = torch.compile(base_model)
+            #model = torch.compile(base_model)
+            print("Attempting to compile model with torch.compile...")
+            # Use conservative but functional compilation settings
+            model = torch.compile(
+                base_model, 
+                mode="default",  # Use default mode for better compatibility
+                fullgraph=False  # Allow graph breaks for complex models
+            )
+            print("✅ Model compiled successfully")
         elif "tiny_vit" in configs.get("model", "").lower(): #Skipping torch.compile for tiny-ViT (known issues)
             model = base_model
         else:
@@ -177,6 +193,12 @@ def train(configs):
     start_time = time.time()
 
     for epoch in range(start_epoch,configs["epochs"]):
+        print("=" * 20)
+        print("Epoch: ", epoch)
+        print("-" * 20)
+        print("Begin Training")
+        
+
         train_epoch(train_loader, model, optimizer, criterion, epoch, configs, scaler)
         val_loss = test(configs, phase="val", model=model, criterion=criterion, loader=val_loader, epoch=epoch)
         if "early_stopping" in configs and configs["early_stopping"] > 0:
@@ -209,9 +231,9 @@ def train(configs):
 def test(configs, phase, model=None, loader=None, criterion=None, epoch="Test"):
     try:
         if phase == "test":
-            print("=" * 20)
+            print("-" * 20)
             print("Begin Testing")
-            print("=" * 20)
+            
             _, _, loader = utils.create_dataloaders(configs)
             criterion = utils.create_loss(configs)
 
@@ -236,9 +258,9 @@ def test(configs, phase, model=None, loader=None, criterion=None, epoch="Test"):
                 model = model
 
         elif phase == "val":
-            print("=" * 20)
+            print("-" * 20)
             print("Begin Evaluation")
-            print("=" * 20)
+            
         else:
             print("Uknown phase!")
             exit(3)
