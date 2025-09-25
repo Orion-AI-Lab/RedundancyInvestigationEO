@@ -484,6 +484,18 @@ def create_webdataset_loaders(
                 for i,_ in enumerate(label):
                     l5[inverted_nomenclature_five[i]] = l5[inverted_nomenclature_five[i]] or label[i]
                 label = l5
+            
+            
+            #Add some checks
+            if configs['dataset']=="flair" and configs['multilabel']:
+                assert configs['task']=="classification", "Multilabel supported only for classification task in flair dataset"
+            if configs['dataset']=="flair" and configs['multilabel'] and configs['task']=="classification":
+                num_classes = configs['num_classes']
+                unique_labels = torch.unique(label)
+                multilabel_target = torch.zeros(num_classes, dtype=torch.float)
+                multilabel_target[unique_labels] = 1
+                label = multilabel_target
+            
             if not yield_dataset:
                 yield (image, label, sample["__key__"])
             else:
