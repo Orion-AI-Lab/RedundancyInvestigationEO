@@ -5,110 +5,42 @@ if [ -z "$1" ]; then
 fi
 
 root_folder_path=$1
-
 full_path="$root_folder_path/BigEarthNet"
 
-mkdir $full_path
+mkdir -p $full_path
 
-sentinel2_url=https://bigearth.net/downloads/BigEarthNet-S2-v1.0.tar.gz
-sentinel1_url=https://bigearth.net/downloads/BigEarthNet-S1-v1.0.tar.gz
-label_url=https://git.tu-berlin.de/rsim/BigEarthNet-S2_19-classes_models/-/raw/master/label_indices.json?inline=false
-
-train_url=https://git.tu-berlin.de/rsim/BigEarthNet-S2_19-classes_models/-/raw/master/splits/train.csv?inline=false
-val_url=https://git.tu-berlin.de/rsim/BigEarthNet-S2_19-classes_models/-/raw/master/splits/val.csv?inline=false
-test_url=https://git.tu-berlin.de/rsim/BigEarthNet-S2_19-classes_models/-/raw/master/splits/test.csv?inline=false
+# Updated URLs for v2.0
+# Base Zenodo record for v2.0: https://zenodo.org/records/10891137
+sentinel2_url="https://zenodo.org/records/10891137/files/BigEarthNet-S2.tar.zst?download=1"
+sentinel1_url="https://zenodo.org/records/10891137/files/BigEarthNet-S1.tar.zst?download=1"
+ref_maps_url="https://zenodo.org/records/10891137/files/Reference_Maps.tar.zst?download=1"
+metadata_url="https://zenodo.org/records/10891137/files/metadata.parquet?download=1"
+snow_cloud_metadata_url="https://zenodo.org/records/10891137/files/metadata_for_patches_with_snow_cloud_or_shadow.parquet?download=1"
 
 echo "Downloading Sentinel-2 data"
+wget -O "$full_path/BigEarthNet-S2.tar.zst" $sentinel2_url
 
-#wget -O "$full_path/BigEarthNet-S2-v1.0.tar.gz" $sentinel2_url
+echo "Downloading Sentinel-1 data"
+wget -O "$full_path/BigEarthNet-S1.tar.zst" $sentinel1_url
 
+echo "Downloading Reference Maps"
+wget -O "$full_path/Reference_Maps.tar.zst" $ref_maps_url
 
-# Check if the download was successful
-##if [ $? -eq 0 ]; then
-#echo "Downloading finished normally."
-#else
-#echo "Downloading failed."
-#fi
+echo "Downloading Metadata Parquet files"
+wget -O "$full_path/metadata.parquet" $metadata_url
+wget -O "$full_path/metadata_for_patches_with_snow_cloud_or_shadow.parquet" $snow_cloud_metadata_url
 
-#echo "Downloading Sentinel-1 data"
+echo "Untaring data..."
+# Use tar with --zstd for .tar.zst files
+for f in "$full_path"/*.tar.zst; do
+    echo "Extracting $f"
+    tar --zstd -xf "$f" --directory "$full_path"
+    if [ $? -eq 0 ]; then
+        echo "Extracted $(basename "$f") successfully."
+        rm "$f"
+    else
+        echo "Extraction of $(basename "$f") failed."
+    fi
+done
 
-#wget -O "$full_path/BigEarthNet-S1-v1.0.tar.gz" $sentinel1_url
-
-# Check if the download was successful
-#if [ $? -eq 0 ]; then
-#echo "Downloading finished normally."
-#else
-#echo "Downloading failed."
-#fi
-
-echo "Downloading metadata"
-
-wget -O "$full_path/label_indices.json" $label_url
-
-# Check if the download was successful
-if [ $? -eq 0 ]; then
-echo "Downloading finished normally."
-else
-echo "Downloading failed."
-fi
-
-wget -O "$full_path/train.csv" $train_url
-# Check if the download was successful
-if [ $? -eq 0 ]; then
-echo "Downloading finished normally."
-else
-echo "Downloading failed."
-fi
-
-wget -O "$full_path/val.csv" $val_url
-# Check if the download was successful
-if [ $? -eq 0 ]; then
-echo "Downloading finished normally."
-else
-echo "Downloading failed."
-fi
-
-wget -O "$full_path/test.csv" $test_url
-# Check if the download was successful
-if [ $? -eq 0 ]; then
-echo "Downloading finished normally."
-else
-echo "Downloading failed."
-fi
-
-wget -O "$full_path/s1s2_mapping.csv" https://git.tu-berlin.de/rsim/BigEarthNet-MM_tools/-/raw/master/files/s1s2_mapping.csv?inline=false
-# Check if the download was successful
-if [ $? -eq 0 ]; then
-echo "Downloading finished normally."
-else
-echo "Downloading failed."
-fi
-
-echo "Untaring data"
-
-#tar -xvf "$full_path/BigEarthNet-S2-v1.0.tar.gz" --directory $full_path
-
-# Check if the download was successful
-#if [ $? -eq 0 ]; then
-#echo "Extracted Sentinel-2 data succesfully."
-#else
-#echo "Sentinel-2 extraction failed."
-#fi
-
-
-#tar -xvf "$full_path/BigEarthNet-S1-v1.0.tar.gz" --directory $full_path
-
-# Check if the download was successful
-#if [ $? -eq 0 ]; then
-#echo "Extracted Sentinel-1 data succesfully."
-#else
-#echo "Sentinel-1 extraction failed."
-#fi
-
-
-echo "Removing tar files"
-
-#rm "$full_path/BigEarthNet-S2-v1.0.tar.gz"
-#rm "$full_path/BigEarthNet-S1-v1.0.tar.gz"
-
-echo "Download finished."
+echo "Download and setup for BigEarthNet finished."
