@@ -246,6 +246,8 @@ def get_dataset(dataset_name, configs, mode):
         dataset = datasets.WoodyDataset.WoodyDataset(configs, mode)
     elif dataset_name.lower() == "waititu":
         dataset = datasets.WaitituDataset.WaitituDataset(configs, mode)
+    elif dataset_name.lower() == "mlrsnet":
+        dataset = datasets.MLRSNetDataset.MLRSNetDataset(configs, mode)
     elif dataset_name.lower() == "bigearthnet":
         dataset = datasets.BigEarthNetDataset.BigEarthNetDataset(configs, mode)
     else:
