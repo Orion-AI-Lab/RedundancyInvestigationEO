@@ -140,7 +140,24 @@ class BigEarthNetDataset(torch.utils.data.Dataset):
         s2_patch = torch.from_numpy(s2_patch.astype("float"))
         s1_patch = torch.from_numpy(s1_patch.astype("float"))
 
-        image = torch.cat((s1_patch, s2_patch), dim=0).float().numpy()
+        # Reorder channels to put RGB-like bands (B04, B03, B02) first for better pretrained weight utilization
+        # Original order: [VV, VH, B01, B02, B03, B04, B05, B06, B07, B08, B8A, B09, B11, B12]
+        # New order: [B04, B03, B02, VV, VH, B01, B05, B06, B07, B08, B8A, B09, B11, B12]
+        # This allows pretrained ImageNet weights to be used for the first 3 channels (RGB-like)
+        
+        # S1 indices: 0 (VV), 1 (VH)
+        # S2 indices: 2 (B01), 3 (B02), 4 (B03), 5 (B04), 6 (B05), 7 (B06), 8 (B07), 9 (B08), 10 (B8A), 11 (B09), 12 (B11), 13 (B12)
+        original_image = torch.cat((s1_patch, s2_patch), dim=0)
+        
+        # Create reordered image: [B04, B03, B02, VV, VH, B01, B05, B06, B07, B08, B8A, B09, B11, B12]
+        image = torch.cat([
+            original_image[5:6],   # B04 (Red)
+            original_image[4:5],   # B03 (Green)
+            original_image[3:4],   # B02 (Blue)
+            original_image[0:2],   # VV, VH
+            original_image[2:3],   # B01
+            original_image[6:],    # B05, B06, B07, B08, B8A, B09, B11, B12
+        ], dim=0).float().numpy()
 
 
         if not self.configs["webdataset"]:

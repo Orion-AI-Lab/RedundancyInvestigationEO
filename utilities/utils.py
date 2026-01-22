@@ -178,6 +178,8 @@ def load_configs(args=None):
         method_config["backbone"] = args.backbone
     if args.retain_percent is not None:
         method_config["retain_percent"] = args.retain_percent
+    if args.pretrained is not None:
+        method_config["pretrained"] = args.pretrained
     config.update(method_config)
 
     # Load training configs
@@ -678,23 +680,34 @@ def create_webdataset_loaders(
             train_dataset = train_dataset.compose(get_patches)
             train_dataset = train_dataset.batched(configs["batch_size"], partial=False)
 
+    # Conditionally disable pin_memory only when keys are needed (random_topx% implementation)
+    # Keys are required for random_topx% but cause pin_memory issues with persistent_workers
+    # For other implementations (topx%, max_len), pin_memory works fine
+    needs_keys = configs.get("implementation") == "random_topx%"
+    use_pin_memory = configs["pin_memory"] and not needs_keys
+    
     train_loader = wds.WebLoader(
         train_dataset,
         num_workers=configs["num_workers"],
         batch_size=None,
         shuffle=False,
-        pin_memory=configs["pin_memory"],
+        pin_memory=use_pin_memory,
         prefetch_factor=configs["prefetch_factor"],
         persistent_workers=configs["persistent_workers"],
     )
-    train_loader = (
-        train_loader.unbatched()
-        .shuffle(
-            configs["webdataset_shuffle_size"],
-            initial=configs["webdataset_initial_buffer"],
-        )
-        .batched(configs["batch_size"])
-    )
+    # REMOVED: Blocking double shuffle that causes GPU utilization spikes
+    # The WebDataset already shuffles at line 677, so this second shuffle is redundant
+    # and creates blocking synchronization points that cause GPU to wait
+    # 
+    # Original blocking code (commented out):
+    # train_loader = (
+    #     train_loader.unbatched()
+    #     .shuffle(
+    #         configs["webdataset_shuffle_size"],
+    #         initial=configs["webdataset_initial_buffer"],
+    #     )
+    #     .batched(configs["batch_size"])
+    # )
     if repeat:
         train_loader = train_loader.repeat()
 
@@ -710,12 +723,13 @@ def create_webdataset_loaders(
     val_dataset = val_dataset.compose(get_patches_eval)
     val_dataset = val_dataset.batched(configs["batch_size"], partial=True)
 
+    # Eval batches don't include keys (only image, label), so pin_memory works fine
     val_loader = wds.WebLoader(
         val_dataset,
         num_workers=configs["num_workers"],
         batch_size=None,
         shuffle=False,
-        pin_memory=configs["pin_memory"],
+        pin_memory=configs["pin_memory"],  # Safe for eval since no strings in batches
     )
     max_test_shard = np.sort(glob.glob(os.path.join(configs["webdataset_path"], "test", "*.tar")))[-1]
     max_test_index = max_test_shard.split("-test-")[-1][:-4]
@@ -729,12 +743,13 @@ def create_webdataset_loaders(
     test_dataset = test_dataset.compose(get_patches_eval)
     test_dataset = test_dataset.batched(configs["batch_size"], partial=True)
 
+    # Eval batches don't include keys (only image, label), so pin_memory works fine
     test_loader = wds.WebLoader(
         test_dataset,
         num_workers=configs["num_workers"],
         batch_size=None,
         shuffle=False,
-        pin_memory=configs["pin_memory"],
+        pin_memory=configs["pin_memory"],  # Safe for eval since no strings in batches
     )
 
     return train_loader, val_loader, test_loader

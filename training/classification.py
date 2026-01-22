@@ -269,14 +269,7 @@ def train(configs):
             print("Saving checkpoint")
             # Store checkpoint
             torch.save(base_model, os.path.join(configs["checkpoint_path"], "best_model.pt"))
-            torch.save(
-            base_model.state_dict(),
-            os.path.join(configs["checkpoint_path"], "best_model_state_dict_" + str(epoch) + ".pt"),
-        )
-        torch.save(
-            base_model.state_dict(),
-            os.path.join(configs["checkpoint_path"], "model_state_dict_" + str(epoch) + ".pt"),
-        )
+            torch.save(base_model.state_dict(), os.path.join(configs["checkpoint_path"], "best_model_state_dict.pt"))
         if early_stop:
             print("Early stopping at epoch: ", epoch)
             break

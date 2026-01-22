@@ -45,7 +45,7 @@ def train_epoch(train_loader, model, optimizer, criterion, epoch, configs, scale
             if (idx + 1) * configs["batch_size"] > configs["samples_per_epoch"]:
                 break
         optimizer.zero_grad()
-        with torch.cuda.amp.autocast(enabled=configs["mixed_precision"]):
+        with torch.amp.autocast(device_type='cuda', enabled=configs["mixed_precision"]):
             image, label, keys = batch
             
             image = image.to(configs["device"])
@@ -63,9 +63,29 @@ def train_epoch(train_loader, model, optimizer, criterion, epoch, configs, scale
 
             label = label.long()
             if configs['architecture']=='rvitupernet':
-                loss = F.cross_entropy(out, label,reduction='none')
-                masked_loss = loss * mask.float()
-                loss = masked_loss.sum()/(mask.sum().clamp(min=1))
+                # Convert mask to float to maintain computation graph
+                # The mask from model is already interpolated to match output size
+                mask_float = mask.float()
+                loss = F.cross_entropy(out, label, reduction='none')  # Shape: [B, H, W]
+                # Ensure mask shape matches loss shape [B, H, W]
+                if mask_float.dim() == 2:
+                    # If mask is [H, W], expand to [B, H, W]
+                    mask_float = mask_float.unsqueeze(0).expand_as(loss)
+                elif mask_float.dim() == 3:
+                    if mask_float.shape[0] == 1 and loss.shape[0] > 1:
+                        # If mask is [1, H, W], expand to [B, H, W]
+                        mask_float = mask_float.expand_as(loss)
+                    elif mask_float.shape != loss.shape:
+                        # Reshape if dimensions don't match
+                        mask_float = F.interpolate(
+                            mask_float.unsqueeze(1).float(), 
+                            size=(loss.shape[1], loss.shape[2]), 
+                            mode='nearest'
+                        ).squeeze(1)
+                masked_loss = loss * mask_float
+                # Ensure denominator is a float tensor in the computation graph
+                mask_sum = mask_float.sum().clamp(min=1.0)
+                loss = masked_loss.sum() / mask_sum
             else:
                 loss = criterion(out, label)
             
@@ -136,8 +156,7 @@ def train(configs):
             print("Saving checkpoint")
             # Store checkpoint
             torch.save(base_model, os.path.join(configs["checkpoint_path"], "best_model.pt"))
-
-        torch.save(base_model.state_dict(), os.path.join(configs["checkpoint_path"], "best_model_state_dict_"+str(epoch)+".pt"))
+            torch.save(base_model.state_dict(), os.path.join(configs["checkpoint_path"], "best_model_state_dict.pt"))
         if early_stop:
             print("Early stopping at epoch: ", epoch)
             break
@@ -194,7 +213,7 @@ def test(configs, phase, model=None, loader=None, criterion=None, epoch="Test"):
     num_samples = 0
     for idx, batch in enumerate(tqdm.tqdm(loader)):
         with torch.no_grad():
-            with torch.cuda.amp.autocast(enabled=configs["mixed_precision"]):
+            with torch.amp.autocast(device_type='cuda', enabled=configs["mixed_precision"]):
                 image, label = batch
                 image = image.to(configs["device"])
                 label = label.to(configs["device"])

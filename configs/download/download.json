@@ -1,4 +1,4 @@
 {
-    "dataset":"sen12ms", // Dataset name
-    "root_path":"/home/mila/n/nikolaos.bountos/scratch/Forests", // Where to save the data.
+    "dataset":"bigearthnet", // Dataset name
+    "root_path":"/mnt/nvme/tpapazaf/datasets", // Where to save the data.
 }
