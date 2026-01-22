@@ -1,8 +1,8 @@
 {
     "epochs": 20,
-    "batch_size": 512,
-    "num_workers": 4,
-    "lr": 1e-4,
+    "batch_size": 2048,
+    "num_workers": 16, 
+    "lr": 2e-4,
     "weight_decay": 1e-4,
     "schedule": null, // cosine with warmup
     "warmup_epochs": 0, //epochs to warmup
@@ -18,16 +18,17 @@
     ], // Options, micro, macro, none for per-class calculation
     "distributed": false,
     "pin_memory": true,
-    "prefetch_factor": 2,
-    "persistent_workers": false,
+    "prefetch_factor": 48, // Optimized for 4 parallel processes (24 × 4 = 96 batches in memory)
+    "persistent_workers": true, // Enabled to keep workers alive between epochs for faster data loading
+    "mixed_precision": true,
     "fully_finetune": false,
     "linear_evaluation": false, // set to true to evaluate a pretrained model
     "pretrained_model_path": null, //"/home/mila/n/nikolaos.bountos/Projects/Forest-Monitoring-Benchmark/checkpoints/mae/all/vit_patch_16_depth_12_heads_6/mask_ratio_0.75/vit_103.pt", //path for the checkpoint to be evaluated under the linear eval protocol
     "resume_checkpoint_path": null, // checkpoint to resume training
-    "enforce_resize": 128, // if not none, data will be resized in both train/evaluation to the provided value (only for webdataset setting),
+    "enforce_resize": null, // if not none, data will be resized in both train/evaluation to the provided value (only for webdataset setting),
     "change_finetuning_resolution": null, // If not none, the finetuning vit will have its positional embedding changed to support the new res
     "finetuning_patch_size": 16, // In accordance to finetuning resolution. Ideally keep it the same as in training
     "start_epoch": 0, // epoch to continue training
-    "log_images": true, // log segmentation masks and images to wandb
+    "log_images": false, // log segmentation masks and images to wandb
     "torch_compile": false // enable torch.compile with error suppression
 }

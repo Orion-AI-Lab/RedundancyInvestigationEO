@@ -3,6 +3,11 @@ import os
 import pprint
 import random
 
+# Set environment variables early to work around cuDNN compatibility issues
+os.environ['TORCH_CUDNN_V8_API_ENABLED'] = '0'
+os.environ['CUDNN_LOGINFO_DBG'] = '0'
+os.environ['CUDNN_LOGERR_DBG'] = '0'
+
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
@@ -10,6 +15,9 @@ import wandb
 import utilities
 import utilities.utils as utils
 import argparse
+
+# Enable TensorFloat32 (TF32) for better performance on Ampere+ GPUs
+torch.set_float32_matmul_precision('high')
 
 import torch.multiprocessing
 torch.multiprocessing.set_sharing_strategy('file_system')
@@ -89,6 +97,7 @@ if __name__ == "__main__":
     parser.add_argument("--attention_mask", default=None, type=str2bool)
     parser.add_argument("--retain_percent", default=None, type=int)
     parser.add_argument("--backbone", default=None, type=str)
+    parser.add_argument("--pretrained", default=None, type=str2bool)
     #parser.add_argument("--patch_size", default=None, type=int)
 
     args = parser.parse_args()

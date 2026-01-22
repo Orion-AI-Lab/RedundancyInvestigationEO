@@ -7,6 +7,7 @@ import torch.nn.functional as F
 import einops
 import wandb
 import hashlib
+import numpy as np
 
 # Import torch._dynamo for skipping compilation on functions that use Python strings
 try:
@@ -648,7 +649,7 @@ class RViT(nn.Module):
     #     rand_indices = torch.stack([torch.randperm(num_tokens)[:k] for _ in range(batch_size)])
     #     return rand_indices
 
-    @skip
+
     def get_random_topk_indices(self, cos_sim, k, keys):
         """
         Deterministic per-image random indices (same every epoch/run for the same key).
@@ -679,6 +680,57 @@ class RViT(nn.Module):
             selected_indices.append(idx)
 
         return torch.stack(selected_indices, dim=0)  # (batch, k)
+
+    def _log_mask_visualization(self, raw_input, keep_mask, patch_size, num_patches_h, num_patches_w):
+        """
+        Log a side-by-side visualization of raw vs masked image for the first sample.
+        This is for debugging/inspection and does not affect the forward pass.
+        """
+        # Only log once to avoid flooding W&B
+        if not getattr(self, "plot_img", False):
+            return
+        if getattr(self, "plot_cnt", 0) > 0:
+            return
+        if not wandb.run:
+            return
+
+        try:
+            # Take first sample
+            raw_img = raw_input[0].detach().cpu().numpy()  # (C, H, W)
+            if raw_img.shape[0] > 3:
+                raw_img = raw_img[:3, :, :]
+            # Normalize to [0, 1] for display
+            raw_img = (raw_img - raw_img.min()) / (raw_img.max() - raw_img.min() + 1e-8)
+            raw_img = raw_img.transpose(1, 2, 0)  # (H, W, C)
+
+            patch_mask = keep_mask[0].detach().cpu().numpy()  # (P,)
+            total_patches = patch_mask.shape[0]
+
+            masked_img = np.zeros_like(raw_img)
+
+            for idx in range(total_patches):
+                h_idx = idx // num_patches_w
+                w_idx = idx % num_patches_w
+
+                h_start = h_idx * patch_size
+                h_end = (h_idx + 1) * patch_size
+                w_start = w_idx * patch_size
+                w_end = (w_idx + 1) * patch_size
+
+                if patch_mask[idx]:
+                    masked_img[h_start:h_end, w_start:w_end] = raw_img[h_start:h_end, w_start:w_end]
+                else:
+                    masked_img[h_start:h_end, w_start:w_end] = 0.0  # black out masked patches
+
+            # Concatenate raw and masked horizontally into a single panel
+            panel = np.concatenate([raw_img, masked_img], axis=1)  # (H, 2W, C)
+            wandb.log({"Raw vs Masked (RViT)": wandb.Image(panel)})
+
+            self.plot_cnt = getattr(self, "plot_cnt", 0) + 1
+        except Exception as e:
+            # Do not fail training because of visualization issues
+            if getattr(self, "plot_img", False):
+                print(f"Mask visualization failed: {e}")
 
     
         # def visualization_input(self, raw_input, raw_label, mask, hier_mask, patch_size, num_patches_w, total_patches):
@@ -743,11 +795,6 @@ class RViT(nn.Module):
         #             #"Retained Patches": patch_mask.sum() / total_patches
         #         })
     
-    @skip
-    def _forward_mask_in_image_space_skipped(self, x, keys=None, label=None,verbose=False):
-        """Skipped version to prevent recompilation when keys is used"""
-        return self.forward_mask_in_image_space(x, keys, label, verbose)
-    
     def forward_mask_in_image_space(self, x, keys=None, label=None,verbose=False):
         """
         Mask patches based on cosine similarity and retain the most important ones.
@@ -784,6 +831,8 @@ class RViT(nn.Module):
              # Store original image dimensions for visualization
             orig_H, orig_W = H + pad_h, W + pad_w
             num_patches_h, num_patches_w = orig_H // patch_size, orig_W // patch_size
+
+            
 
         # Extract actual token embeddings
         x = self.model.patch_embed(x)
@@ -944,6 +993,10 @@ class RViT(nn.Module):
                 cls_mask = torch.zeros((x.shape[0], 1), device=x.device, dtype=torch.bool)
                 token_attention_mask = torch.cat((cls_mask, token_attention_mask), dim=1)
 
+        # after all branches where final_mask is filled
+        if self.training and self.mask_threshold <= 1.0 and self.retain_percent <= 100 and wandb.run:
+                self._log_mask_visualization(raw_input, final_mask, patch_size, num_patches_h, num_patches_w)
+
         # Forward through the model
         x = self.model.norm_pre(x)
 
@@ -1022,12 +1075,6 @@ class RViT(nn.Module):
         if self.mask_in_token_space:
             x = self.forward_mask_in_token_space(x,verbose=False)
         else:
-            # Skip forward_mask_in_image_space when keys is used to prevent recompilation
-            # This is a workaround for Dynamo creating guards on keys[0]
-            if self.implementation == "random_topx%" and keys is not None:
-                # Call the skipped version to avoid recompilation
-                x, hierarchical_mask, final_mask = self._forward_mask_in_image_space_skipped(x, keys, label, verbose=False)
-            else:
                 x, hierarchical_mask, final_mask = self.forward_mask_in_image_space(x, keys, label, verbose=False)
         if not self.hierarchical_features:
             return self.model.forward_head(x)
