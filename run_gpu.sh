@@ -1,8 +1,8 @@
 #!/bin/bash
 # run.sh
 # This script launches experiments sequentially while varying parameters defined in rvit.json.
-# Usage: ./run.sh [--gpu GPU_NUMBER]
-#   --gpu: GPU number to use (0-7), e.g., ./run.sh --gpu 4
+# Usage: ./run_gpu.sh [--gpu GPU_NUMBER]
+#   --gpu: GPU number to use (0-7), e.g., ./run_gpu.sh --gpu 4
 # If no --gpu specified, uses the device from main_config
 
 # Exit immediately if a command exits with a non-zero status.
@@ -27,31 +27,35 @@ fi
 #Backbones
 #vit_backbones=("vit_base_patch32_224" "vit_base_patch16_224" "vit_base_patch8_224")
 #vit_backbones=("vit_base_patch16_224" "vit_base_patch32_224")
-vit_backbones=("vit_base_patch32_224")
+#vit_backbones=("vit_base_patch32_224" "vit_base_patch16_224" "vit_base_patch8_224" "vit_base_patch4_224" "vit_base_patch2_224" )
 #patch_size=(4)
+vit_backbones=("vit_base_patch16_224")
 
 
 #implementations=("topx%" "random_topx%" "max_len")
-implementations=("random_topx%")
+implementations=("topx%") #"random_topx%")
 #implementations=("max_len")
 
-mask_thresholds=(1.0 0.95 0.9 0.85 0.8 0.7 0.6)
+mask_thresholds=(1.0)
 #mask_thresholds=(0.95 0.9)
-#retain_percents=(100 85 50 40 25 15 5)
-#retain_percents=(100 85 50 40 25 15 5)
-retain_percents=(100)
+retain_percents=(100) #85 50 40 25 15 5)
+
+# Pretrained weights setting (true/false)
+# Set to "true" to use pretrained weights, "false" to train from scratch
+# If empty/unset, uses the value from method config file
+PRETRAINED="false"
 
 # Fixed configuration files and seed (adjust these paths as needed)
 #main_config="configs/main_configs/bigearthnet.json"
-main_config="configs/main_configs/mlrsnet.json"
-#main_config="configs/main_configs/woody.json"
+#main_config="configs/main_configs/mlrsnet.json"
+main_config="configs/main_configs/woody.json"
 #main_config="configs/main_configs/flair.json"
 #main_config="configs/main_configs/marida.json"
-method_config="configs/method/classification/rvit.json"
-#method_config="configs/method/segmentation/rvitupernet.json"
+#method_config="configs/method/classification/rvit.json"
+method_config="configs/method/segmentation/rvitupernet.json"
 #training_config="configs/training/training_per_dataset/rvit/bigearthnet_training.json"
-training_config="configs/training/training_per_dataset/rvit/mlrsnet_training.json"
-#training_config="configs/training/training_per_dataset/rvitupernet/woody_training.json"
+#training_config="configs/training/training_per_dataset/rvit/mlrsnet_training.json"
+training_config="configs/training/training_per_dataset/rvitupernet/woody_training.json"
 #training_config="configs/training/training_per_dataset/woody_training.json"
 
 seed=222
@@ -126,6 +130,7 @@ for backbone in "${vit_backbones[@]}"; do
                        --implementation="$impl" \
                        --mask_threshold="$mask_threshold" \
                        --attention_mask="$attn_mask" \
+                       ${PRETRAINED:+--pretrained="$PRETRAINED"} \
                        #--patch_size="$patch_size"
         # If python returns a non-zero exit code, the script will exit (due to set -e)
         wait  # Ensures only one script runs at a time before continuing
@@ -142,6 +147,7 @@ for backbone in "${vit_backbones[@]}"; do
                        --implementation="$impl" \
                        --retain_percent="$retain_percent" \
                        --attention_mask="$attn_mask" \
+                       ${PRETRAINED:+--pretrained="$PRETRAINED"} \
                        #--patch_size="$patch_size"
         wait
       done
@@ -155,6 +161,7 @@ for backbone in "${vit_backbones[@]}"; do
                        --backbone="$backbone" \
                        --implementation="$impl" \
                        --attention_mask="$attn_mask" \
+                       ${PRETRAINED:+--pretrained="$PRETRAINED"} \
                        #--patch_size="$patch_size"
       wait
     fi

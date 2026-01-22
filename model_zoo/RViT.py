@@ -6,10 +6,23 @@ from torch import nn
 import torch.nn.functional as F
 import einops
 import wandb
-from pytorch_msssim import ssim as pytorch_ssim
-#import numpy as np
-#import matplotlib.pyplot as plt
-#undefined_variables = 1
+import hashlib
+
+# Import torch._dynamo for skipping compilation on functions that use Python strings
+try:
+    import torch._dynamo as dynamo
+    skip = dynamo.skip
+    # Mark dynamic for parameters that change but shouldn't cause recompilation
+    try:
+        mark_dynamic = dynamo.mark_dynamic
+    except AttributeError:
+        mark_dynamic = None
+except (ImportError, AttributeError):
+    # Fallback if torch._dynamo is not available
+    def skip(fn):
+        return fn
+    mark_dynamic = None
+
 class RViT(nn.Module):
     def __init__(self, num_classes, backbone, image_size, num_channels, pretrained=True, mask_threshold=0.9,mask_in_token_space=True, implementation="max_len", pad_value=0.0, retain_percent=0,attention_mask=False, hierarchical_features=False):
         """
@@ -75,44 +88,7 @@ class RViT(nn.Module):
         if (self.implementation == "topx%" or self.implementation == "random_topx%") and (self.retain_percent <= 0 or self.retain_percent > 100):
             raise ValueError("Value of retain_percent must be greater than 0 and less than or equal to 100 for topx% implementation.")
         
-    def _patches_to_image_shape(self, patches_flat, patch_h, patch_w):
-        """
-        Convert patches flattened as (B, P, C*ph*pw) or (B, P, ph*pw*C) to (B,P,C,ph,pw).
-        If patches_flat already in (B,P,C,ph,pw) return unchanged.
-        """
-        if patches_flat.dim() == 5:
-            return patches_flat
-        B, P, flat = patches_flat.shape
-        # Try to infer C from self.model.patch_embed or passed args; here we assume you know C
-        C = self.model.patch_embed.proj.in_channels if hasattr(self.model, "patch_embed") else None
-        if C is None:
-            raise ValueError("Cannot infer C. Pass patches as (B,P,C,ph,pw) or set C manually.")
-        ph, pw = patch_h, patch_w
-        return patches_flat.view(B, P, C, ph, pw)
 
-    def batch_pairwise_ssim(self, patches_img, patch_h, patch_w, win_size=11):
-        """
-        Compute pairwise SSIM similarity between patches.
-        patches_img: (B, P, C, ph, pw)
-        returns: sim (B, P, P) with SSIM scores in [0,1]
-        """
-        B, P, C, ph, pw = patches_img.shape
-
-        # Build all pairs via broadcasting then flatten to a big batch
-        a = patches_img.unsqueeze(2).expand(-1, -1, P, -1, -1, -1)  # (B, P, P, C, ph, pw)
-        b = patches_img.unsqueeze(1).expand(-1, P, -1, -1, -1, -1)   # (B, P, P, C, ph, pw)
-
-        # reshape to (B*P*P, C, ph, pw)
-        a_flat = a.contiguous().view(B * P * P, C, ph, pw)
-        b_flat = b.contiguous().view(B * P * P, C, ph, pw)
-
-        # pytorch_msssim.ssim expects inputs in [0,1] or normalized; it returns a scalar per input pair
-        # It supports batched inputs; set size_average=False to get per-sample
-        # NOTE: the signature may vary; use your installed version
-        ssim_vals = pytorch_ssim(a_flat, b_flat, data_range=1.0, size_average=False)  # shape (B*P*P,)
-        # reshape back to (B, P, P)
-        ssim_vals = ssim_vals.view(B, P, P)
-        return ssim_vals
 
     def calc_mask(self, x,verbose=False):
         #Mask similar tokens
@@ -587,21 +563,123 @@ class RViT(nn.Module):
         topk_keep = sorted_idxs[:, :k]                  # [B, k]
         topk_keep[topk_keep == n] = -1
         return topk_keep
+    
+    def fps_from_cosine_sim(self,cos_sim, k):
+        """
+        Batched FPS on cosine similarity matrices.
+        Assumes cos_sim computed from L2-normalized embeddings (no abs).
+        Returns indices [B, k] in selection order.
+        """
+        device = cos_sim.device
+        B, n, _ = cos_sim.shape
+        if k <= 0:
+            return torch.empty((B, 0), dtype=torch.long, device=device)
+        if k >= n:
+            return torch.arange(n, device=device).unsqueeze(0).expand(B, -1).clone()
+
+        # convert similarity -> distance in [0,2] for cos in [-1,1]
+        distance = 1.0 - cos_sim.clone()   # higher -> farther
+
+        # seed with farthest pair (max distance among i<j)
+        idx = torch.arange(n, device=device)
+        # avoid self-pairs by making diagonal tiny negative
+        distance[:, idx, idx] = -1.0
+
+        tri = torch.triu(torch.ones((n, n), dtype=torch.bool, device=device), diagonal=1)
+        masked = distance.clone()
+        masked[:, ~tri] = float('-inf')        # only keep upper-tri values
+        flat = masked.view(B, -1)
+        max_pair = flat.argmax(dim=1)          # pair with largest distance
+        r = max_pair // n
+        c = max_pair % n
+
+        # bookkeeping
+        selected = torch.zeros((B, n), dtype=torch.bool, device=device)
+        batch_idx = torch.arange(B, device=device)
+        selected[batch_idx, r] = True
+        selected[batch_idx, c] = True
+
+        result = torch.full((B, k), -1, dtype=torch.long, device=device)
+        result[:, 0] = r
+        if k > 1:
+            result[:, 1] = c
+
+        selected_count = 2 if k > 1 else 1
+
+        # iterative FPS: for each unselected i compute min_j d(i,j) over selected j,
+        # then pick argmax of that min-distance
+        POS_INF = float('inf')
+        NEG_INF = float('-inf')
+
+        for t in range(selected_count, k):
+            # pair_mask[b,i,j] == True iff i is UNselected and j is SELECTED
+            sel_mask = selected.unsqueeze(1)        # [B,1,n]
+            unsel_mask = (~selected).unsqueeze(2)   # [B,n,1]
+            pair_mask = unsel_mask & sel_mask       # [B,n,n]
+
+            # For min we want non-(unselected->selected) entries to be +inf so they don't reduce the min
+            # (only selected j's for each candidate i remain finite)
+            distance_masked = torch.where(pair_mask, distance, torch.full_like(distance, POS_INF))  # [B,n,n]
+
+            # minimum distance to selected set for each candidate i
+            min_dist_to_selected, _ = distance_masked.min(dim=2)   # [B,n]
+
+            # prevent selecting already selected entries: set their min-dist to NEG_INF so they won't be argmax
+            min_dist_to_selected = min_dist_to_selected.masked_fill(selected, NEG_INF)
+
+            # now pick candidate with maximum of those minima
+            next_idx = min_dist_to_selected.argmax(dim=1)   # [B]
+            result[:, t] = next_idx
+            selected[batch_idx, next_idx] = True
+
+        return result
 
 
+    # def get_random_topk_indices(self, cos_sim, k):
+    #     """ Selects k random token indices for each sample in the batch.
 
-    def get_random_topk_indices(self, cos_sim, k):
-        """ Selects k random token indices for each sample in the batch.
+    #     Args:
+    #         cos_sim: A tensor of shape (batch, num_tokens, num_tokens)
+    #         k: The number of tokens to select randomly.
+    #     Returns:
+    #         A tensor of shape (batch, k) containing k random indices for each sample.
+    #     """
+    #     batch_size, num_tokens, _ = cos_sim.shape
+    #     rand_indices = torch.stack([torch.randperm(num_tokens)[:k] for _ in range(batch_size)])
+    #     return rand_indices
 
+    @skip
+    def get_random_topk_indices(self, cos_sim, k, keys):
+        """
+        Deterministic per-image random indices (same every epoch/run for the same key).
         Args:
-            cos_sim: A tensor of shape (batch, num_tokens, num_tokens)
-            k: The number of tokens to select randomly.
+            cos_sim: Tensor of shape (batch, num_tokens, num_tokens)
+            k: number of tokens to select
+            keys: iterable of unique strings/IDs for each sample in the batch (len == batch)
         Returns:
-            A tensor of shape (batch, k) containing k random indices for each sample.
+            Tensor of shape (batch, k) on the same device as cos_sim
         """
         batch_size, num_tokens, _ = cos_sim.shape
-        rand_indices = torch.stack([torch.randperm(num_tokens)[:k] for _ in range(batch_size)])
-        return rand_indices
+        device = cos_sim.device
+
+        if keys is None or len(keys) != batch_size:
+            raise ValueError("len(keys) must equal batch_size")
+
+        selected_indices = []
+        for key in keys:
+            # stable 32-bit seed from key
+            seed = int(hashlib.md5(key.encode()).hexdigest(), 16) % (2**32)
+
+            # local generator -> does not change global RNG state
+            gen = torch.Generator(device=device)
+            gen.manual_seed(seed)
+
+            # deterministic permutation for this key
+            idx = torch.randperm(num_tokens, generator=gen, device=device)[:k]
+            selected_indices.append(idx)
+
+        return torch.stack(selected_indices, dim=0)  # (batch, k)
+
     
         # def visualization_input(self, raw_input, raw_label, mask, hier_mask, patch_size, num_patches_w, total_patches):
         # #Convert raw input to CPU numpy array
@@ -665,8 +743,12 @@ class RViT(nn.Module):
         #             #"Retained Patches": patch_mask.sum() / total_patches
         #         })
     
-    def forward_mask_in_image_space(self, x, keys=None, label=None,verbose=False): 
-    #def forward_mask_in_image_space(self, x, verbose=False):
+    @skip
+    def _forward_mask_in_image_space_skipped(self, x, keys=None, label=None,verbose=False):
+        """Skipped version to prevent recompilation when keys is used"""
+        return self.forward_mask_in_image_space(x, keys, label, verbose)
+    
+    def forward_mask_in_image_space(self, x, keys=None, label=None,verbose=False):
         """
         Mask patches based on cosine similarity and retain the most important ones.
         Masked patches are replaced with padding.
@@ -692,7 +774,7 @@ class RViT(nn.Module):
             C = x.shape[1]    # original image channels before rearrange (make sure you have it)
             ph, pw = patch_size, patch_size
             patches_img = patches.view(B, P, C, ph, pw)   # adjust if dimension order differs
-            ssim = self.batch_pairwise_ssim(patches_img, ph, pw)   # returns (B,P,P) in [0,1]
+            #ssim = self.batch_pairwise_ssim(patches_img, ph, pw)   # returns (B,P,P) in [0,1]
             # Compute cosine similarity
             #cos_sim = self.batch_cos_similarity(patches)
             cos_sim = torch.abs(self.batch_cos_similarity(patches))
@@ -726,7 +808,8 @@ class RViT(nn.Module):
          
             if self.training and self.retain_percent <= 100:
                 #keep_indices = self.get_topk_indices_mean_similarity(cos_sim, int(cos_sim.shape[1] * (self.retain_percent / 100)))
-                keep_indices = self.get_topk_indices_redundancy_based(cos_sim, int(cos_sim.shape[1] * (self.retain_percent / 100)))
+                #keep_indices = self.get_topk_indices_redundancy_based(cos_sim, int(cos_sim.shape[1] * (self.retain_percent / 100)))
+                keep_indices = self.fps_from_cosine_sim(cos_sim, int(cos_sim.shape[1] * (self.retain_percent / 100)))
                 # Ensure we select the same number of patches across all samples
                 k = keep_indices.shape[1]  # Number of patches to retain
                 
@@ -755,7 +838,9 @@ class RViT(nn.Module):
 
             if self.training and self.retain_percent <= 100:
                 # Get random top-k indices
-                keep_indices = self.get_random_topk_indices(cos_sim, int(cos_sim.shape[1] * (self.retain_percent / 100)))
+                if keys is None:
+                    raise ValueError("keys must be provided for 'random_topx%' implementation")
+                keep_indices = self.get_random_topk_indices(cos_sim, int(cos_sim.shape[1] * (self.retain_percent / 100)), keys)
                 # Ensure we select the same number of patches across all samples
                 k = keep_indices.shape[1]
                 # Gather selected patches
@@ -937,7 +1022,13 @@ class RViT(nn.Module):
         if self.mask_in_token_space:
             x = self.forward_mask_in_token_space(x,verbose=False)
         else:
-            x, hierarchical_mask, final_mask = self.forward_mask_in_image_space(x, keys, label, verbose=False)
+            # Skip forward_mask_in_image_space when keys is used to prevent recompilation
+            # This is a workaround for Dynamo creating guards on keys[0]
+            if self.implementation == "random_topx%" and keys is not None:
+                # Call the skipped version to avoid recompilation
+                x, hierarchical_mask, final_mask = self._forward_mask_in_image_space_skipped(x, keys, label, verbose=False)
+            else:
+                x, hierarchical_mask, final_mask = self.forward_mask_in_image_space(x, keys, label, verbose=False)
         if not self.hierarchical_features:
             return self.model.forward_head(x)
         else:
