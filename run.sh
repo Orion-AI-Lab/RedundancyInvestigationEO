@@ -14,32 +14,36 @@
 #Backbones
 #vit_backbones=("vit_base_patch32_224" "vit_base_patch16_224" "vit_base_patch8_224")
 #vit_backbones=("vit_base_patch16_224" "vit_base_patch32_224")
-vit_backbones=("vit_base_patch32_224")
+vit_backbones=("vit_base_patch16_224")
 #patch_size=(4)
 
 
 #implementations=("topx%" "random_topx%" "max_len")
+#implementations=("topx%" "max_len" "random_topx%")
 implementations=("topx%")
-#implementations=("max_len")
 
 mask_thresholds=(1.0 0.95 0.9 0.85 0.8 0.7 0.6)
-#mask_thresholds=(0.95 0.9)
-#retain_percents=(100 85 50 40 25 15 5)
-retain_percents=(25 15 5)
-#retain_percents=(100)
+#mask_thresholds=(0.9)
+#retain_percents=(85 50 40 25 15 5)
+retain_percents=(15)
+#retain_percents=(100 85 50 40 21 15 5)
 
 # Fixed configuration files and seed (adjust these paths as needed)
-main_config="configs/main_configs/bigearthnet.json"
-#main_config="configs/main_configs/mlrsnet.json"
+#main_config="configs/main_configs/bigearthnet.json"
+main_config="configs/main_configs/mlrsnet.json"
 #main_config="configs/main_configs/woody.json"
 #main_config="configs/main_configs/flair.json"
 #main_config="configs/main_configs/marida.json"
-method_config="configs/method/classification/rvit.json"
+#method_config="configs/method/classification/rvit.json"
+method_config="configs/method/classification/vit_redinf.json"
 #method_config="configs/method/segmentation/rvitupernet.json"
-training_config="configs/training/training_per_dataset/rvit/bigearthnet_training.json"
-#training_config="configs/training/training_per_dataset/rvit/mlrsnet_training.json"
+#training_config="configs/training/training_per_dataset/rvit/bigearthnet_training.json"
+#training_config="configs/training/training_per_dataset/rvitupernet/marida_training.json"
+#training_config="configs/training/training_per_dataset/rvit/flair_training.json"
+training_config="configs/training/training_per_dataset/rvit/mlrsnet_training.json"
 #training_config="configs/training/training_per_dataset/rvitupernet/woody_training.json"
 #training_config="configs/training/training_per_dataset/woody_training.json"
+#training_config="configs/training/training_per_dataset/rvitupernet/flair_training.json"
 
 seed=222
 
