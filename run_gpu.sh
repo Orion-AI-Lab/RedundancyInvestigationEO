@@ -31,7 +31,7 @@ fi
 #patch_size=(4)
 vit_backbones=("vit_base_patch32_224")
 
-cd ..
+
 #implementations=("topx%" "random_topx%" "max_len")
 implementations=("random_topx%")
 #implementations=("max_len")
@@ -39,7 +39,7 @@ implementations=("random_topx%")
 mask_thresholds=(1.0)
 #mask_thresholds=(0.95 0.9)
 #retain_percents=(100 85 50 40 25 15 5)
-retain_percents=(25 15)
+retain_percents=(25) #15)
 
 # Pretrained weights setting (true/false)
 # Set to "true" to use pretrained weights, "false" to train from scratch
