@@ -116,9 +116,11 @@ def train_epoch(train_loader, model, optimizer, criterion, epoch, configs, scale
 
 
 def train(configs):
+
     print("=" * 20)
     print("Initializing segmentation trainer")
     print("=" * 20)
+    
     metrics = utils.initialize_metrics(configs)
     criterion = utils.create_loss(configs)
     base_model = model_utils.create_model(configs)
@@ -140,6 +142,11 @@ def train(configs):
     best_loss = 10000.0
     early_stop_counter = 0
     for epoch in range(configs["epochs"]):
+        print("=" * 20)
+        print("Epoch: ", epoch)
+        print("-" * 20)
+        print("Begin Training")
+
         train_epoch(train_loader, model, optimizer, criterion, epoch, configs, scaler)
 
         val_loss = test(configs, phase="val", model=model, criterion=criterion, loader=val_loader, epoch=epoch)
@@ -164,9 +171,9 @@ def train(configs):
 
 def test(configs, phase, model=None, loader=None, criterion=None, epoch="Test"):
     if phase == "test":
-        print("=" * 20)
+        print("-" * 20)
         print("Begin Testing")
-        print("=" * 20)
+
         _, _, loader = utils.create_dataloaders(configs)
         criterion = utils.create_loss(configs)
 
@@ -176,18 +183,32 @@ def test(configs, phase, model=None, loader=None, criterion=None, epoch="Test"):
             print(configs["eval_checkpoint"])
             print("=" * 20)
             # Load model from checkpoint
-            model = torch.load(os.path.join(configs["eval_checkpoint"]), map_location=configs["device"])
+            # In PyTorch >= 2.6, torch.load defaults to weights_only=True.
+            # We explicitly set weights_only=False because this checkpoint
+            # was created by our own code and contains the full model object.
+            model = torch.load(
+                os.path.join(configs["eval_checkpoint"]),
+                map_location=configs["device"],
+                weights_only=False,
+            )
         else:
             # infer checkpoint path from configs
             # Load model from checkpoint
-            model = torch.load(os.path.join(configs["checkpoint_path"], "best_model.pt"), map_location=configs["device"])
+            # In PyTorch >= 2.6, torch.load defaults to weights_only=True.
+            # We explicitly set weights_only=False because this checkpoint
+            # was created by our own code and contains the full model object.
+            model = torch.load(
+                os.path.join(configs["checkpoint_path"], "best_model.pt"),
+                map_location=configs["device"],
+                weights_only=False,
+            )
 
         # compile model (torch 2.0)
         # model = torch.compile(model)
     elif phase == "val":
-        print("=" * 20)
+        print("-" * 20)
         print("Begin Evaluation")
-        print("=" * 20)
+
     else:
         print("Uknown phase!")
         exit(3)
