@@ -131,7 +131,7 @@ def train(configs):
 
     if configs["mixed_precision"]:
         # Creates a GradScaler once at the beginning of training.
-        scaler = torch.cuda.amp.GradScaler()
+        scaler = torch.amp.GradScaler("cuda")
     else:
         scaler = None
 
