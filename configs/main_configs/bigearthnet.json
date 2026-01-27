@@ -4,7 +4,8 @@
     "wandb_project": "RedundancyInvestigation_classification",
     "wandb_entity": "deepcube",
     "wandb_id_resume": null,
-    "rgb": true,
+    "rgb": false,
+    "in_channels": 14,
     "phase": "train",
     "eval_checkpoint": null, //"/home/mila/n/nikolaos.bountos/scratch/FoMo-BenchV2/linear_eval/classification/bigearthnet/fomo-single/dulcet-snowflake-328", // Checkpoint to evaluate on when phase=test. If null the last checkpoint will be used. If not null, the evaluation will be based on the provided checkpoint path.
     "device": "cuda:2",

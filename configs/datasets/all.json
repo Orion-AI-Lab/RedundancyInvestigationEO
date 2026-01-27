@@ -181,7 +181,7 @@
             "sentinel-2-b8a":9,
             "sentinel-2-b9":10,
             "sentinel-2-b11":11,
-            "sentinel-2-b12":12,
+            "sentinel-2-b12":12
         },
         "sen12ms":{
             "sentinel-1-vv":0,
