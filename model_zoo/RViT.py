@@ -25,7 +25,10 @@ except (ImportError, AttributeError):
     mark_dynamic = None
 
 class RViT(nn.Module):
-    def __init__(self, num_classes, backbone, image_size, num_channels, pretrained=True, mask_threshold=0.9,mask_in_token_space=True, implementation="max_len", pad_value=0.0, retain_percent=0,attention_mask=False, hierarchical_features=False):
+    def __init__(self, num_classes, backbone, image_size, num_channels, pretrained=True,
+                 mask_threshold=0.9, mask_in_token_space=True, implementation="max_len",
+                 pad_value=0.0, retain_percent=0, attention_mask=False,
+                 hierarchical_features=False, apply_mask_in_infer=False):
         """
         Initialize the RViT model.
 
@@ -39,6 +42,8 @@ class RViT(nn.Module):
             mask_in_token_space: Whether to mask similar tokens in the token space or in the image space.
             pad_value: The value to use for padding masked tokens.
             attention_mask: Whether to use mask attention for the padded tokens
+            apply_mask_in_infer: If True, apply the masking logic during the
+                                 testing phase (inference), but NOT during validation.
         """
         super(RViT, self).__init__()
         self.mask_in_token_space = mask_in_token_space
@@ -49,6 +54,8 @@ class RViT(nn.Module):
         self.implementation = implementation
         self.backbone = backbone
         self.hierarchical_features = hierarchical_features
+        # Controls whether masking is used during inference (test phase only)
+        self.apply_mask_in_infer = apply_mask_in_infer
         self.plot_img = True
         self.plot_cnt = 0
 
@@ -58,7 +65,7 @@ class RViT(nn.Module):
         else:
             from model_zoo import MaskAttentionViT as MaskAttentionViT
 
-            if self.implementation in ["median", "topx%", "vit", "random_topx%"]:
+            if self.implementation in ["median", "topx%", "vit", "random_topx%", "different_random_topx%"]:
                 raise ValueError("Invalid arguments. "
                                 "Change the attention_mask to False or the implementation to max_len")
 
@@ -82,11 +89,11 @@ class RViT(nn.Module):
             if not self.attention_mask:
                 raise ValueError("MaskAttentionViT requires attention_mask=True")
               
-        if self.implementation not in ["median", "max_len", "topx%", "vit", "random_topx%"]:
+        if self.implementation not in ["median", "max_len", "topx%", "vit", "random_topx%", "different_random_topx%"]:
             raise ValueError("Invalid or missing `implementation`. "
-                                "Choose from: [median, max_len, topx%, vit, random_topx%]")
+                                "Choose from: [median, max_len, topx%, vit, random_topx%, different_random_topx%]")
         
-        if (self.implementation == "topx%" or self.implementation == "random_topx%") and (self.retain_percent <= 0 or self.retain_percent > 100):
+        if (self.implementation == "topx%" or self.implementation == "random_topx%" or self.implementation == "different_random_topx%") and (self.retain_percent <= 0 or self.retain_percent > 100):
             raise ValueError("Value of retain_percent must be greater than 0 and less than or equal to 100 for topx% implementation.")
         
 
@@ -256,8 +263,14 @@ class RViT(nn.Module):
         x = self.model.patch_embed(x)
         x = self.model._pos_embed(x)
         x = self.model.patch_drop(x)
-        #Mask per batch
-        if self.training:
+        # Decide whether to apply masking:
+        # - always in training
+        # - optionally in testing (inference) if apply_mask_in_infer is True
+        is_testing = getattr(self, "testing", False)
+        apply_infer = getattr(self, "apply_mask_in_infer", False)
+        use_mask = self.training or (is_testing and apply_infer)
+
+        if use_mask:
             x = self.calc_mask_vectorised(x,False)
 
         #TODO Mask per sample and pad to max length (?)
@@ -636,18 +649,18 @@ class RViT(nn.Module):
         return result
 
 
-    # def get_random_topk_indices(self, cos_sim, k):
-    #     """ Selects k random token indices for each sample in the batch.
+    def get_different_random_topk_indices(self, cos_sim, k):
+        """ Selects k random token indices for each sample in the batch.
 
-    #     Args:
-    #         cos_sim: A tensor of shape (batch, num_tokens, num_tokens)
-    #         k: The number of tokens to select randomly.
-    #     Returns:
-    #         A tensor of shape (batch, k) containing k random indices for each sample.
-    #     """
-    #     batch_size, num_tokens, _ = cos_sim.shape
-    #     rand_indices = torch.stack([torch.randperm(num_tokens)[:k] for _ in range(batch_size)])
-    #     return rand_indices
+        Args:
+            cos_sim: A tensor of shape (batch, num_tokens, num_tokens)
+            k: The number of tokens to select randomly.
+        Returns:
+            A tensor of shape (batch, k) containing k random indices for each sample.
+        """
+        batch_size, num_tokens, _ = cos_sim.shape
+        rand_indices = torch.stack([torch.randperm(num_tokens)[:k] for _ in range(batch_size)])
+        return rand_indices
 
 
     def get_random_topk_indices(self, cos_sim, k, keys):
@@ -668,8 +681,23 @@ class RViT(nn.Module):
 
         selected_indices = []
         for key in keys:
+            # Handle both string and Tensor keys
+            if isinstance(key, torch.Tensor):
+                # Convert tensor to string representation for hashing
+                # Use a stable representation (e.g., convert to bytes or use item() if scalar)
+                if key.numel() == 1:
+                    key_str = str(key.item())
+                else:
+                    # For multi-element tensors, use a hash of the tensor values
+                    # Convert to numpy first, then to bytes for stable hashing
+                    key_str = str(key.detach().cpu().numpy().tobytes())
+            elif isinstance(key, (bytes, bytearray)):
+                key_str = key.decode('utf-8', errors='ignore')
+            else:
+                key_str = str(key)
+            
             # stable 32-bit seed from key
-            seed = int(hashlib.md5(key.encode()).hexdigest(), 16) % (2**32)
+            seed = int(hashlib.md5(key_str.encode()).hexdigest(), 16) % (2**32)
 
             # local generator -> does not change global RNG state
             gen = torch.Generator(device=device)
@@ -803,8 +831,19 @@ class RViT(nn.Module):
         raw_input = x.clone()
 
         hierarchical_mask = None
+
+        is_testing = getattr(self, "testing", False)
+        apply_infer = getattr(self, "apply_mask_in_infer", False)
+        use_mask = self.training or (is_testing and apply_infer)
         
-        if self.training and self.mask_threshold <= 1.0 and self.retain_percent <= 100:
+        # Debug print for masking logic
+        if is_testing and not hasattr(self, "_debug_printed_masking"):
+            print(f"[DEBUG] forward_mask_in_image_space: use_mask={use_mask}, "
+                  f"mask_threshold={self.mask_threshold}, retain_percent={self.retain_percent}, "
+                  f"training={self.training}, is_testing={is_testing}, apply_infer={apply_infer}")
+            self._debug_printed_masking = True
+        
+        if use_mask and self.mask_threshold <= 1.0 and self.retain_percent <= 100:
             patch_size = self.model.patch_embed.patch_size[0]
 
             # Ensure input dimensions are multiples of patch size
@@ -837,7 +876,18 @@ class RViT(nn.Module):
         # Extract actual token embeddings
         x = self.model.patch_embed(x)
         x = self.model._pos_embed(x)
+        x_before_drop = x.clone()  # Save for debugging
         x = self.model.patch_drop(x)
+        
+        # Debug: check if patch_drop changed the number of tokens
+        if is_testing and not hasattr(self, "_debug_printed_patch_drop"):
+            if hasattr(self.model, 'patch_drop') and hasattr(self.model.patch_drop, 'drop_prob'):
+                drop_prob = self.model.patch_drop.drop_prob if hasattr(self.model.patch_drop, 'drop_prob') else 0.0
+                print(f"[DEBUG] patch_drop: drop_prob={drop_prob}, "
+                      f"tokens before drop={x_before_drop.shape[1]}, after drop={x.shape[1]}")
+            else:
+                print(f"[DEBUG] patch_drop: tokens={x.shape[1]} (no drop_prob attribute)")
+            self._debug_printed_patch_drop = True
 
         # Handle CLS token separately
         cls_token = None
@@ -855,41 +905,112 @@ class RViT(nn.Module):
         #3 Options: 1st-topx%, 2nd-median, 3rd-max_len
         if self.implementation == "topx%":
          
-            if self.training and self.retain_percent <= 100:
-                #keep_indices = self.get_topk_indices_mean_similarity(cos_sim, int(cos_sim.shape[1] * (self.retain_percent / 100)))
-                #keep_indices = self.get_topk_indices_redundancy_based(cos_sim, int(cos_sim.shape[1] * (self.retain_percent / 100)))
-                keep_indices = self.fps_from_cosine_sim(cos_sim, int(cos_sim.shape[1] * (self.retain_percent / 100)))
-                # Ensure we select the same number of patches across all samples
-                k = keep_indices.shape[1]  # Number of patches to retain
+            if use_mask and self.retain_percent <= 100:
+                # Debug: verify cos_sim exists and show patch counts
+                if is_testing and not hasattr(self, "_debug_printed_topx"):
+                    print(f"[DEBUG] topx% masking: cos_sim exists={('cos_sim' in locals())}, "
+                          f"cos_sim.shape={cos_sim.shape if 'cos_sim' in locals() else 'N/A'}, "
+                          f"total_patches={total_patches}, "
+                          f"x.shape (tokens)={x.shape}, "
+                          f"target_k={int(cos_sim.shape[1] * (self.retain_percent / 100)) if 'cos_sim' in locals() else 'N/A'}")
+                    self._debug_printed_topx = True
                 
-                # Sort indices to ensure consistent ordering across different selection approaches
+                # Verify cos_sim was computed (should exist from earlier block)
+                if 'cos_sim' not in locals():
+                    print(f"[ERROR] cos_sim not found! Masking cannot proceed.")
+                    # Fallback: skip masking
+                else:
+                    #keep_indices = self.get_topk_indices_mean_similarity(cos_sim, int(cos_sim.shape[1] * (self.retain_percent / 100)))
+                    #keep_indices = self.get_topk_indices_redundancy_based(cos_sim, int(cos_sim.shape[1] * (self.retain_percent / 100)))
+                    target_k = int(cos_sim.shape[1] * (self.retain_percent / 100))
+                    keep_indices = self.fps_from_cosine_sim(cos_sim, target_k)
+                    # Ensure we select the same number of patches across all samples
+                    k = keep_indices.shape[1]  # Number of patches to retain
+                    
+                    # Sort indices to ensure consistent ordering across different selection approaches
+                    keep_indices, _ = torch.sort(keep_indices, dim=1)
+                    
+                    if is_testing and not hasattr(self, "_debug_printed_topx_result"):
+                        print(f"[DEBUG] topx% masking RESULT: Selected {k} patches out of {cos_sim.shape[1]} "
+                              f"({100*k/cos_sim.shape[1]:.1f}%), "
+                              f"x.shape before selection={x.shape}, "
+                              f"keep_indices.shape={keep_indices.shape}, "
+                              f"keep_indices sample[0,:10]={keep_indices[0,:10].cpu().tolist() if keep_indices.numel() > 0 else 'empty'}")
+                        self._debug_printed_topx_result = True
+                    
+                    # Gather selected patches (reorder for < 100% retention)
+                    batch_indices = torch.arange(x.shape[0], device=x.device).unsqueeze(-1).expand(-1, k)
+                    orig_shape = x.shape
+                    x = x[batch_indices, keep_indices]  # Efficient batch gather
+                    
+                    if is_testing and not hasattr(self, "_debug_printed_topx_final"):
+                        print(f"[DEBUG] topx% masking FINAL: x.shape after selection={x.shape}, "
+                              f"retained {k}/{total_patches} tokens ({100*k/total_patches:.1f}%)")
+                        self._debug_printed_topx_final = True
+                    
+                    hierarchical_mask = torch.zeros(orig_shape[:-1], dtype=torch.bool,device=x.device)
+                    batch_indices = torch.arange(keep_indices.size(0), device=keep_indices.device).unsqueeze(-1)
+                    hierarchical_mask[batch_indices, keep_indices] = True
+                    final_mask[batch_indices, keep_indices] = True
+
+                    if verbose:
+                        print(f"Cos sim shape: {cos_sim.shape}, Selected indices: {keep_indices.shape}, Output shape: {x.shape}")
+
+                    if wandb.run:
+                        wandb.log({"unmasked_patches_ratio": k / total_patches})
+        elif self.implementation == "different_random_topx%":
+
+            if use_mask and self.retain_percent <= 100:
+                # Get random top-k indices
+                # If keys are None (e.g., in test phase), generate deterministic keys from batch indices
+                if keys is None:
+                    if is_testing:
+                        # Generate deterministic keys for test phase: "test_sample_0", "test_sample_1", etc.
+                        batch_size = cos_sim.shape[0]
+                        keys = [f"test_sample_{i}" for i in range(batch_size)]
+                    else:
+                        raise ValueError("keys must be provided for 'different_random_topx%' implementation in training")
+                
+                keep_indices = self.get_different_random_topk_indices(cos_sim, int(cos_sim.shape[1] * (self.retain_percent / 100)), keys)
+                # Sort so sequence is in spatial order; otherwise decoder gets scrambled layout and IoU drops
                 keep_indices, _ = torch.sort(keep_indices, dim=1)
-                
-                # Gather selected patches (reorder for < 100% retention)
+                # Ensure we select the same number of patches across all samples
+                k = keep_indices.shape[1]
+                # Gather selected patches
                 batch_indices = torch.arange(x.shape[0], device=x.device).unsqueeze(-1).expand(-1, k)
                 orig_shape = x.shape
+                #print(orig_shape)
                 x = x[batch_indices, keep_indices]  # Efficient batch gather
+                hierarchical_mask = torch.zeros(orig_shape[:-1], dtype=torch.bool, device=x.device)
+                #print(hierarchical_mask.shape)
+                batch_indices = torch.arange(keep_indices.size(0), device=x.device).unsqueeze(-1)
                 
-                hierarchical_mask = torch.zeros(orig_shape[:-1], dtype=torch.bool,device=x.device)
-                #batch_indices = torch.arange(keep_indices.size(0), device=keep_mask.device).unsqueeze(-1)
-                
-                batch_indices = torch.arange(keep_indices.size(0), device=keep_indices.device).unsqueeze(-1)
+                # Set the top indices to True
                 hierarchical_mask[batch_indices, keep_indices] = True
-                final_mask[batch_indices, keep_indices] = True
+                final_mask[batch_indices, keep_indices] = True  
 
                 if verbose:
                     print(f"Cos sim shape: {cos_sim.shape}, Selected indices: {keep_indices.shape}, Output shape: {x.shape}")
 
                 if wandb.run:
-                    wandb.log({"unmasked_patches_ratio": k / total_patches})
+                    wandb.log({"unmasked_patches_ratio": k / orig_shape[1]})
         
         elif self.implementation == "random_topx%":
 
-            if self.training and self.retain_percent <= 100:
+            if use_mask and self.retain_percent <= 100:
                 # Get random top-k indices
+                # If keys are None (e.g., in test phase), generate deterministic keys from batch indices
                 if keys is None:
-                    raise ValueError("keys must be provided for 'random_topx%' implementation")
+                    if is_testing:
+                        # Generate deterministic keys for test phase: "test_sample_0", "test_sample_1", etc.
+                        batch_size = cos_sim.shape[0]
+                        keys = [f"test_sample_{i}" for i in range(batch_size)]
+                    else:
+                        raise ValueError("keys must be provided for 'random_topx%' implementation in training")
+                
                 keep_indices = self.get_random_topk_indices(cos_sim, int(cos_sim.shape[1] * (self.retain_percent / 100)), keys)
+                # Sort so sequence is in spatial order; otherwise decoder gets scrambled layout and IoU drops
+                keep_indices, _ = torch.sort(keep_indices, dim=1)
                 # Ensure we select the same number of patches across all samples
                 k = keep_indices.shape[1]
                 # Gather selected patches
@@ -912,7 +1033,7 @@ class RViT(nn.Module):
                     wandb.log({"unmasked_patches_ratio": k / orig_shape[1]})
 
         elif self.implementation == "max_len":
-            if self.training and self.mask_threshold <= 1.0:
+            if use_mask and self.mask_threshold <= 1.0:
 
                 keep_mask = keep_mask[:, :total_patches]  # Ensure matching shape
 
@@ -945,7 +1066,7 @@ class RViT(nn.Module):
 
 
         elif self.implementation == "median":
-            if self.training and self.mask_threshold <= 1.0:
+            if use_mask and self.mask_threshold <= 1.0:
 
                 keep_mask = keep_mask[:, :total_patches]  # Ensure matching shape     
                 #Mask based on similarity
@@ -989,12 +1110,12 @@ class RViT(nn.Module):
   
 
         # Remove CLS token
-        if self.training and self.attention_mask and not self.hierarchical_features:
+        if use_mask and self.attention_mask and not self.hierarchical_features:
                 cls_mask = torch.zeros((x.shape[0], 1), device=x.device, dtype=torch.bool)
                 token_attention_mask = torch.cat((cls_mask, token_attention_mask), dim=1)
 
         # after all branches where final_mask is filled
-        if self.training and self.mask_threshold <= 1.0 and self.retain_percent <= 100 and wandb.run:
+        if use_mask and self.mask_threshold <= 1.0 and self.retain_percent <= 100 and wandb.run:
                 self._log_mask_visualization(raw_input, final_mask, patch_size, num_patches_h, num_patches_w)
 
         # Forward through the model
@@ -1065,13 +1186,22 @@ class RViT(nn.Module):
         x = self.model.norm(x)
 
         if not self.hierarchical_features:
-            return x, None, None
+            return x, None, final_mask  # return final_mask so visualization can show kept/masked patches
         else:
             return [stage1, stage2, stage3, stage4], hierarchical_mask, final_mask
 
     
     #SEGMENTATION
     def forward(self, x, keys=None, label=None):
+        # Lightweight debug print to confirm RViT is used in test phase
+        if getattr(self, "testing", False) and not hasattr(self, "_debug_printed_forward"):
+            print(f"[DEBUG] RViT forward in testing mode. "
+                  f"implementation={self.implementation}, "
+                  f"retain_percent={self.retain_percent}, "
+                  f"mask_in_token_space={self.mask_in_token_space}, "
+                  f"apply_mask_in_infer={getattr(self, 'apply_mask_in_infer', None)}")
+            self._debug_printed_forward = True
+
         if self.mask_in_token_space:
             x = self.forward_mask_in_token_space(x,verbose=False)
         else:

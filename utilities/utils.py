@@ -99,7 +99,12 @@ def create_checkpoint_path(configs):
         exit(3)
 
     # Add the run name to the checkpoint path
-    checkpoint_path = checkpoint_path / configs["wandb_run_name"]
+    # Handle case where wandb_run_name might be None (e.g., if wandb.init() hasn't completed)
+    run_name = configs.get("wandb_run_name")
+    if run_name is None:
+        # Use a default name if wandb_run_name is not set
+        run_name = "unnamed_run"
+    checkpoint_path = checkpoint_path / run_name
     checkpoint_path.mkdir(parents=True, exist_ok=True)
     return checkpoint_path
 
@@ -180,6 +185,8 @@ def load_configs(args=None):
         method_config["retain_percent"] = args.retain_percent
     if args.pretrained is not None:
         method_config["pretrained"] = args.pretrained
+    if getattr(args, "apply_mask_in_infer", None) is not None:
+        method_config["apply_mask_in_infer"] = args.apply_mask_in_infer
     config.update(method_config)
 
     # Load training configs
@@ -301,6 +308,18 @@ def create_dataloaders(configs):
                                                         configs["backbone"] == "dinov2"):
             drop_last_eval = True
 
+    # Reproducible dataloading: same shuffle order and worker RNG across runs
+    base_seed = configs.get("seed", 0)
+
+    def _worker_init_fn(worker_id):
+        worker_seed = base_seed + worker_id
+        np.random.seed(worker_seed)
+        random.seed(worker_seed)
+        torch.manual_seed(worker_seed)
+
+    train_generator = torch.Generator()
+    train_generator.manual_seed(base_seed)
+
     train_loader = torch.utils.data.DataLoader(
         train_dataset,
         batch_size=configs["batch_size"],
@@ -309,6 +328,8 @@ def create_dataloaders(configs):
         pin_memory=configs["pin_memory"],
         drop_last=True,
         collate_fn=collate_function,
+        worker_init_fn=_worker_init_fn if configs["num_workers"] > 0 else None,
+        generator=train_generator,
     )
     val_loader = torch.utils.data.DataLoader(
         val_dataset,
@@ -614,25 +635,28 @@ def create_webdataset_loaders(
         exit(1)
 
     max_train_shard = np.sort(glob.glob(os.path.join(configs["webdataset_path"], "train", "*.tar")))[-1]
-    max_train_index = max_train_shard.split("-train-")[-1][:-4]
+    # Handle both naming patterns: sample-train-{index}.tar and sample-train-{process}-{index}.tar
+    shard_name = os.path.basename(max_train_shard)
+    parts = shard_name.replace(".tar", "").split("-train-")[-1].split("-")
+    if len(parts) == 2:
+        # Pattern: sample-train-{process}-{index}.tar (parallel writer)
+        max_train_index = parts[1]  # Get the shard index
+    else:
+        # Pattern: sample-train-{index}.tar (sequential writer)
+        max_train_index = parts[0]
 
     """if "dataset_percentage" in configs and configs["dataset_percentage"] is not None:
         max_train_index_int = int(int(max_train_index) * configs["dataset_percentage"])
         max_train_index = "{:06d}".format(max_train_index_int)"""
 
-    train_shards = os.path.join(
-        configs["webdataset_path"],
-        "train",
-        "sample-train-{000000.." + max_train_index + "}.tar",
-    )
+    # Get all train shard files (handles both sequential and parallel writer patterns)
+    all_train_shards = sorted(glob.glob(os.path.join(configs["webdataset_path"], "train", "sample-train-*.tar")))
     if "dataset_percentage" in configs and configs["dataset_percentage"] is not None:
-        samples = []
-        for i in range(int(max_train_index) + 1):
-            sh = "{:06d}".format(i)
-            samples.append(os.path.join(configs["webdataset_path"], "train", "sample-train-" + sh + ".tar"))
         # Shuffle samples with seed 222
-        random.Random(222).shuffle(samples)
-        train_shards = samples[: int(len(samples) * configs["dataset_percentage"])]
+        random.Random(222).shuffle(all_train_shards)
+        train_shards = all_train_shards[: int(len(all_train_shards) * configs["dataset_percentage"])]
+    else:
+        train_shards = all_train_shards
 
     if not self_supervised and not supervised_foundation:
         train_dataset = wds.WebDataset(train_shards, shardshuffle=True, resampled=False).shuffle(
@@ -680,12 +704,21 @@ def create_webdataset_loaders(
             train_dataset = train_dataset.compose(get_patches)
             train_dataset = train_dataset.batched(configs["batch_size"], partial=False)
 
-    # Conditionally disable pin_memory only when keys are needed (random_topx% implementation)
-    # Keys are required for random_topx% but cause pin_memory issues with persistent_workers
-    # For other implementations (topx%, max_len), pin_memory works fine
-    needs_keys = configs.get("implementation") == "random_topx%"
-    use_pin_memory = configs["pin_memory"] and not needs_keys
-    
+    # Disable pin_memory for training WebDataset loaders because batches always include keys
+    # Keys are strings (sample["__key__"]) and cannot be pinned to GPU memory
+    # This causes CUDA errors: "CUDA error: invalid argument" in pin_memory thread
+    # Eval/val loaders use get_patches_eval which don't return keys, so pin_memory works there
+    use_pin_memory = False  # Always disable for training loaders due to keys in batch
+
+    # Reproducible WebDataset: seed workers so shuffle and augmentations are deterministic
+    _base_seed = configs.get("seed", 0)
+
+    def _webdataset_worker_init_fn(worker_id):
+        w_seed = _base_seed + worker_id
+        np.random.seed(w_seed)
+        random.seed(w_seed)
+        torch.manual_seed(w_seed)
+
     train_loader = wds.WebLoader(
         train_dataset,
         num_workers=configs["num_workers"],
@@ -694,6 +727,7 @@ def create_webdataset_loaders(
         pin_memory=use_pin_memory,
         prefetch_factor=configs["prefetch_factor"],
         persistent_workers=configs["persistent_workers"],
+        worker_init_fn=_webdataset_worker_init_fn if configs["num_workers"] > 0 else None,
     )
     # REMOVED: Blocking double shuffle that causes GPU utilization spikes
     # The WebDataset already shuffles at line 677, so this second shuffle is redundant
@@ -711,13 +745,7 @@ def create_webdataset_loaders(
     if repeat:
         train_loader = train_loader.repeat()
 
-    max_val_shard = np.sort(glob.glob(os.path.join(configs["webdataset_path"], "val", "*.tar")))[-1]
-    max_val_index = max_val_shard.split("-val-")[-1][:-4]
-    val_shards = os.path.join(
-        configs["webdataset_path"],
-        "val",
-        "sample-val-{000000.." + max_val_index + "}.tar",
-    )
+    val_shards = sorted(glob.glob(os.path.join(configs["webdataset_path"], "val", "sample-val-*.tar")))
 
     val_dataset = wds.WebDataset(val_shards, shardshuffle=False, resampled=False)
     val_dataset = val_dataset.compose(get_patches_eval)
@@ -731,13 +759,7 @@ def create_webdataset_loaders(
         shuffle=False,
         pin_memory=configs["pin_memory"],  # Safe for eval since no strings in batches
     )
-    max_test_shard = np.sort(glob.glob(os.path.join(configs["webdataset_path"], "test", "*.tar")))[-1]
-    max_test_index = max_test_shard.split("-test-")[-1][:-4]
-    test_shards = os.path.join(
-        configs["webdataset_path"],
-        "test",
-        "sample-test-{000000.." + max_test_index + "}.tar",
-    )
+    test_shards = sorted(glob.glob(os.path.join(configs["webdataset_path"], "test", "sample-test-*.tar")))
 
     test_dataset = wds.WebDataset(test_shards, shardshuffle=False, resampled=False)
     test_dataset = test_dataset.compose(get_patches_eval)
@@ -917,7 +939,172 @@ def initialize_metrics(configs):
                     print("Metric: ", metric, " not supported!")
                     continue
             metrics.append(m)
+    # FLAIR paper metric: mIoU on first 12 classes only (indices 0–11), excluding "other" (12–18)
+    # Class order per paper: building, pervious surface, impervious surface, bare soil, water,
+    # coniferous, deciduous, brushwood, vineyard, herbaceous vegetation, agricultural land, plowed land.
+    if configs.get("task") == "segmentation" and configs.get("dataset") == "flair" and configs.get("num_classes") == 19 and configs.get("flair_miou_12", True):
+        m_12 = JaccardIndex(task="multiclass", num_classes=19, average="none").to(configs["device"])
+        m_12.flair_12 = True  # mark for logging mean of first 12 classes only
+        metrics.append(m_12)
     return tuple(metrics)
+
+
+def compute_class_weights_log_inverse(
+    loader,
+    num_classes,
+    device,
+    epsilon=1.02,
+    max_weight=10.0,
+    max_batches=None,
+):
+    """
+    Compute class weights from training set pixel frequencies using log-inverse weighting.
+    weight[c] = 1 / log(freq[c] + epsilon). Compresses extreme ratios and boosts rare
+    classes safely. Recommended for macro Jaccard / IoU with severe class imbalance.
+
+    Args:
+        loader: DataLoader yielding (image, label, ...); label shape [B, H, W].
+        num_classes: Number of segmentation classes (0..num_classes-1).
+        device: Device for the returned tensor.
+        epsilon: Add to freq before log; 1.02--1.1 keeps weights stable (recommended 1.02).
+        max_weight: Cap weights so max(weight) <= max_weight (sanity: <= 10, ideally 2--6).
+        max_batches: If set, use at most this many batches for counting (faster; None = full pass).
+
+    Returns:
+        weights: Tensor of shape (num_classes,) on device, dtype float32.
+    """
+    import math
+    count = [0] * num_classes
+    total = 0
+    n_batches = 0
+    for batch in loader:
+        label = batch[1]
+        if not isinstance(label, torch.Tensor):
+            continue
+        label = label.long()
+        valid = (label >= 0) & (label < num_classes)
+        for c in range(num_classes):
+            count[c] += (label == c).sum().item()
+        total += valid.sum().item()
+        n_batches += 1
+        if n_batches % 50 == 0:
+            print("[class_weights] scanning batches: {} ({} pixels so far)".format(n_batches, total), flush=True)
+        if max_batches is not None and n_batches >= max_batches:
+            break
+    total = max(total, 1)
+    freq = [count[c] / total for c in range(num_classes)]
+    # Progress: report once after counting
+    print("[class_weights] counted {} valid pixels in {} batches.".format(total, n_batches))
+    # Log-inverse: weight[c] = 1 / log(freq[c] + epsilon)
+    weights = []
+    for c in range(num_classes):
+        f = max(freq[c], 1e-8)
+        w = 1.0 / math.log(f + epsilon)
+        weights.append(w)
+    w_tensor = torch.tensor(weights, dtype=torch.float32, device=device)
+    # Cap so max(weight) <= max_weight
+    if w_tensor.max() > max_weight:
+        w_tensor = w_tensor.clamp(max=max_weight)
+    # Optional: scale so max is in 2--6 range for stability (user can disable via max_weight=10)
+    return w_tensor
+
+
+class MulticlassDiceLoss(nn.Module):
+    """Multiclass Dice loss (soft Dice, macro over classes). Aligns with Jaccard/IoU."""
+
+    def __init__(self, num_classes, smooth=1e-6):
+        super().__init__()
+        self.num_classes = num_classes
+        self.smooth = smooth
+
+    def forward(self, logits, targets):
+        # logits: [B, C, H, W], targets: [B, H, W] class indices
+        probs = torch.softmax(logits, dim=1)
+        targets_one_hot = torch.nn.functional.one_hot(
+            targets.long().clamp(0, self.num_classes - 1), num_classes=self.num_classes
+        )
+        targets_one_hot = targets_one_hot.permute(0, 3, 1, 2).float()
+        dice_per_class = []
+        for c in range(self.num_classes):
+            pred_c = probs[:, c]
+            target_c = targets_one_hot[:, c]
+            intersection = (pred_c * target_c).sum()
+            union = pred_c.sum() + target_c.sum()
+            dice_c = (2.0 * intersection + self.smooth) / (union + self.smooth)
+            dice_per_class.append(dice_c)
+        dice_mean = torch.stack(dice_per_class).mean()
+        return 1.0 - dice_mean
+
+
+class CombinedCEPlusDiceLoss(nn.Module):
+    """Cross-Entropy + Dice. Optional mask for CE (e.g. redundancy masking)."""
+
+    def __init__(self, num_classes, dice_weight=0.5, dice_smooth=1e-6):
+        super().__init__()
+        self.num_classes = num_classes
+        self.dice_weight = dice_weight
+        self.dice = MulticlassDiceLoss(num_classes, smooth=dice_smooth)
+
+    def forward(self, logits, targets, mask=None):
+        # logits: [B, C, H, W], targets: [B, H, W]
+        if mask is not None:
+            ce_per_pixel = torch.nn.functional.cross_entropy(
+                logits, targets.long(), reduction="none"
+            )
+            mask_float = mask.float()
+            if mask_float.dim() == 2:
+                mask_float = mask_float.unsqueeze(0).expand_as(ce_per_pixel)
+            elif mask_float.dim() == 3 and mask_float.shape != ce_per_pixel.shape:
+                mask_float = torch.nn.functional.interpolate(
+                    mask_float.unsqueeze(1).float(),
+                    size=ce_per_pixel.shape[-2:],
+                    mode="nearest",
+                ).squeeze(1)
+            ce = (ce_per_pixel * mask_float).sum() / mask_float.sum().clamp(min=1.0)
+        else:
+            ce = torch.nn.functional.cross_entropy(logits, targets.long())
+        dice = self.dice(logits, targets)
+        return ce + self.dice_weight * dice
+
+
+class WeightedCEDiceLoss(nn.Module):
+    """
+    Class-weighted Cross-Entropy + Dice for macro Jaccard / IoU.
+    Weights computed e.g. via log-inverse: weight[c] = 1 / log(freq[c] + epsilon).
+    Same interface as CombinedCEPlusDiceLoss (supports mask= for redundancy masking).
+    Loss = (1 - dice_weight) * WeightedCE + dice_weight * Dice.
+    """
+
+    def __init__(self, num_classes, weights, dice_weight=0.5, dice_smooth=1e-6):
+        super().__init__()
+        self.num_classes = num_classes
+        self.dice_weight = dice_weight
+        self.register_buffer("class_weights", weights.float())
+        self.dice = MulticlassDiceLoss(num_classes, smooth=dice_smooth)
+
+    def forward(self, logits, targets, mask=None):
+        # logits: [B, C, H, W], targets: [B, H, W]; weights on same device as logits
+        w = self.class_weights.to(logits.device)
+        if mask is not None:
+            ce_per_pixel = torch.nn.functional.cross_entropy(
+                logits, targets.long(), weight=w, reduction="none"
+            )
+            mask_float = mask.float()
+            if mask_float.dim() == 2:
+                mask_float = mask_float.unsqueeze(0).expand_as(ce_per_pixel)
+            elif mask_float.dim() == 3 and mask_float.shape != ce_per_pixel.shape:
+                mask_float = torch.nn.functional.interpolate(
+                    mask_float.unsqueeze(1).float(),
+                    size=ce_per_pixel.shape[-2:],
+                    mode="nearest",
+                ).squeeze(1)
+            ce = (ce_per_pixel * mask_float).sum() / mask_float.sum().clamp(min=1.0)
+        else:
+            ce = torch.nn.functional.cross_entropy(
+                logits, targets.long(), weight=w
+            )
+        dice = self.dice(logits, targets)
+        return (1.0 - self.dice_weight) * ce + self.dice_weight * dice
 
 
 def create_loss(configs):
@@ -926,6 +1113,37 @@ def create_loss(configs):
             return nn.BCEWithLogitsLoss()
         else:
             return nn.CrossEntropyLoss()
+    elif configs["loss"] == "ce_dice":
+        num_classes = configs.get("num_classes")
+        if num_classes is None:
+            raise ValueError("num_classes required in config for ce_dice loss")
+        dice_weight = configs.get("dice_weight", 0.5)
+        return CombinedCEPlusDiceLoss(
+            num_classes=num_classes,
+            dice_weight=float(dice_weight),
+        )
+    elif configs["loss"] == "ce_dice_weighted":
+        num_classes = configs.get("num_classes")
+        if num_classes is None:
+            raise ValueError("num_classes required in config for ce_dice_weighted loss")
+        dice_weight = configs.get("dice_weight", 0.5)
+        class_weights = configs.get("class_weights")
+        if class_weights is None:
+            # e.g. test-only run without precomputed weights: fall back to unweighted CE+Dice
+            # return CombinedCEPlusDiceLoss(
+            #     num_classes=num_classes,
+            #     dice_weight=float(dice_weight),
+            # )
+            print("[ce_dice_weighted] class_weights not in config; using unweighted CE+Dice (e.g. test-only).")
+            return CombinedCEPlusDiceLoss(
+                num_classes=num_classes,
+                dice_weight=float(dice_weight),
+            )
+        return WeightedCEDiceLoss(
+            num_classes=num_classes,
+            weights=class_weights,
+            dice_weight=float(dice_weight),
+        )
     else:
         print("Loss not supported")
         exit(3)

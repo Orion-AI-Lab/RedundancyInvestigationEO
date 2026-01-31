@@ -31,6 +31,45 @@ def early_stopping(val_loss, best_loss, counter, patience=5):
         return False, counter
 
 
+def make_combined_visualization(image_tensor, mask_tensor, pred_tensor, configs):
+    """Build side-by-side PIL image (raw | ground truth | prediction) for one sample.
+    image_tensor: [C, H, W], mask_tensor: [H, W], pred_tensor: [H, W]. Returns PIL Image or None on error.
+    """
+    try:
+        img = image_tensor
+        if len(img.shape) == 3 and img.shape[0] > 100:
+            img = img.permute(2, 0, 1)
+        if configs["normalization"] == "standard":
+            denorm_mean = torch.tensor(configs["mean"])[:3] if len(configs["mean"]) >= 3 else torch.tensor(configs["mean"])
+            denorm_std = torch.tensor(configs["std"])[:3] if len(configs["std"]) >= 3 else torch.tensor(configs["std"])
+            img_to_denorm = img[:3, :, :].unsqueeze(0)
+            denormalizer = kornia.enhance.Denormalize(denorm_mean, denorm_std)
+            img_disp = denormalizer(img_to_denorm).squeeze(0).permute(1, 2, 0)
+            img_min, img_max = img_disp.min(), img_disp.max()
+            if img_max > img_min:
+                img_disp = (img_disp - img_min) / (img_max - img_min)
+            img_disp = (img_disp * 255).clamp(0, 255).detach().cpu().numpy().astype(np.uint8)
+        else:
+            img_disp = img[:3, :, :].permute(1, 2, 0).detach().cpu().numpy()
+            img_disp = (img_disp * 255).astype(np.uint8) if img_disp.max() <= 1.0 else np.clip(img_disp, 0, 255).astype(np.uint8)
+        gt_np = mask_tensor.detach().cpu().numpy().astype(np.int32)
+        pred_np = pred_tensor.detach().cpu().numpy().astype(np.int32)
+        num_classes = configs["num_classes"]
+        colormap = cm.get_cmap('tab20', num_classes)
+        gt_norm = gt_np.astype(np.float32) / (num_classes - 1) if num_classes > 1 else gt_np.astype(np.float32)
+        pred_norm = pred_np.astype(np.float32) / (num_classes - 1) if num_classes > 1 else pred_np.astype(np.float32)
+        gt_colored = (colormap(gt_norm)[:, :, :3] * 255).astype(np.uint8)
+        pred_colored = (colormap(pred_norm)[:, :, :3] * 255).astype(np.uint8)
+        h, w = img_disp.shape[:2]
+        combined = np.zeros((h, w * 3, 3), dtype=np.uint8)
+        combined[:, 0:w, :] = img_disp
+        combined[:, w:2*w, :] = gt_colored
+        combined[:, 2*w:3*w, :] = pred_colored
+        return Image.fromarray(combined)
+    except Exception:
+        return None
+
+
 def train_epoch(train_loader, model, optimizer, criterion, epoch, configs, scaler):
     if not configs["linear_evaluation"] and not configs["fully_finetune"]:
         model.train()
@@ -58,6 +97,8 @@ def train_epoch(train_loader, model, optimizer, criterion, epoch, configs, scale
             if not configs["linear_evaluation"] and not configs["fully_finetune"]:
                 if configs['architecture']=='rvitupernet':
                     out, mask = model(image, label=label, keys=keys)
+                elif configs['architecture']=='maskedresnet_unet':
+                    out, mask = model(image, label=label, keys=keys)
                 elif configs['architecture']=='unet':   
                     out = model(image)
                 else:
@@ -68,30 +109,32 @@ def train_epoch(train_loader, model, optimizer, criterion, epoch, configs, scale
                 out = model((image, spectral_keys))
 
             label = label.long()
-            if configs['architecture']=='rvitupernet':
+            if configs['architecture']=='rvitupernet' or configs['architecture']=='maskedresnet_unet':
                 # Convert mask to float to maintain computation graph
-                # The mask from model is already interpolated to match output size
                 mask_float = mask.float()
-                loss = F.cross_entropy(out, label, reduction='none')  # Shape: [B, H, W]
-                # Ensure mask shape matches loss shape [B, H, W]
                 if mask_float.dim() == 2:
-                    # If mask is [H, W], expand to [B, H, W]
-                    mask_float = mask_float.unsqueeze(0).expand_as(loss)
-                elif mask_float.dim() == 3:
-                    if mask_float.shape[0] == 1 and loss.shape[0] > 1:
-                        # If mask is [1, H, W], expand to [B, H, W]
+                    mask_float = mask_float.unsqueeze(0)
+                if mask_float.dim() == 3 and out.shape[-2:] != mask_float.shape[-2:]:
+                    mask_float = F.interpolate(
+                        mask_float.unsqueeze(1).float(),
+                        size=out.shape[-2:],
+                        mode='nearest',
+                    ).squeeze(1)
+                # Combined CE+Dice (and weighted variant) support optional mask for CE
+                if configs.get("loss") in ("ce_dice", "ce_dice_weighted"):
+                    loss = criterion(out, label, mask=mask_float)
+                else:
+                    loss = F.cross_entropy(out, label, reduction='none')
+                    if mask_float.dim() == 2:
                         mask_float = mask_float.expand_as(loss)
                     elif mask_float.shape != loss.shape:
-                        # Reshape if dimensions don't match
                         mask_float = F.interpolate(
-                            mask_float.unsqueeze(1).float(), 
-                            size=(loss.shape[1], loss.shape[2]), 
-                            mode='nearest'
+                            mask_float.unsqueeze(1).float(),
+                            size=(loss.shape[1], loss.shape[2]),
+                            mode='nearest',
                         ).squeeze(1)
-                masked_loss = loss * mask_float
-                # Ensure denominator is a float tensor in the computation graph
-                mask_sum = mask_float.sum().clamp(min=1.0)
-                loss = masked_loss.sum() / mask_sum
+                    mask_sum = mask_float.sum().clamp(min=1.0)
+                    loss = (loss * mask_float).sum() / mask_sum
             else:
                 loss = criterion(out, label)
             
@@ -126,8 +169,35 @@ def train(configs):
     print("=" * 20)
     print("Initializing segmentation trainer")
     print("=" * 20)
-    
+    import sys
+    sys.stdout.flush()
+    sys.stderr.flush()
+
+    print("Initializing metrics...", flush=True)
     metrics = utils.initialize_metrics(configs)
+    print("Creating dataloaders...", flush=True)
+    # Create dataloaders before criterion so we can compute class weights for ce_dice_weighted
+    train_loader, val_loader, _ = utils.create_dataloaders(configs)
+    print("Dataloaders created.", flush=True)
+
+    # Class weighting for macro Jaccard: compute from train set (log-inverse), then create loss
+    if configs.get("loss") == "ce_dice_weighted":
+        print("Computing class weights from training set (set class_weight_max_batches to limit, e.g. 100)...")
+        class_weights = utils.compute_class_weights_log_inverse(
+            train_loader,
+            num_classes=configs["num_classes"],
+            device=configs["device"],
+            epsilon=configs.get("class_weight_epsilon", 1.02),
+            max_weight=configs.get("class_weight_max", 10.0),
+            max_batches=configs.get("class_weight_max_batches"),  # None = full pass
+        )
+        configs["class_weights"] = class_weights
+        w = class_weights.cpu().numpy()
+        print("[class_weights] log-inverse (epsilon={}): min={:.3f}, max={:.3f}, mean={:.3f}".format(
+            configs.get("class_weight_epsilon", 1.02), float(w.min()), float(w.max()), float(w.mean())
+        ))
+        print("[class_weights] per-class:", [round(float(x), 3) for x in w])
+
     criterion = utils.create_loss(configs)
     base_model = model_utils.create_model(configs)
     optimizer = utils.create_optimizer(configs)(
@@ -143,7 +213,7 @@ def train(configs):
     else:
         scaler = None
 
-    train_loader, val_loader, _ = utils.create_dataloaders(configs)
+    #train_loader, val_loader, _ = utils.create_dataloaders(configs)
     model.to(configs["device"])
     best_loss = 10000.0
     early_stop_counter = 0
@@ -183,31 +253,110 @@ def test(configs, phase, model=None, loader=None, criterion=None, epoch="Test"):
         _, _, loader = utils.create_dataloaders(configs)
         criterion = utils.create_loss(configs)
 
-        if configs["eval_checkpoint"] is not None:
-            print("=" * 20)
-            print("Evaluating segmentation for phase: ", phase, " with checkpoint: ")
-            print(configs["eval_checkpoint"])
-            print("=" * 20)
-            # Load model from checkpoint
-            # In PyTorch >= 2.6, torch.load defaults to weights_only=True.
-            # We explicitly set weights_only=False because this checkpoint
-            # was created by our own code and contains the full model object.
-            model = torch.load(
-                os.path.join(configs["eval_checkpoint"]),
-                map_location=configs["device"],
-                weights_only=False,
-            )
-        else:
-            # infer checkpoint path from configs
-            # Load model from checkpoint
-            # In PyTorch >= 2.6, torch.load defaults to weights_only=True.
-            # We explicitly set weights_only=False because this checkpoint
-            # was created by our own code and contains the full model object.
-            model = torch.load(
-                os.path.join(configs["checkpoint_path"], "best_model.pt"),
-                map_location=configs["device"],
-                weights_only=False,
-            )
+        # Load model from checkpoint with error handling
+        try:
+            # Prefer explicit eval_checkpoint if provided; otherwise fall back to checkpoint_path/best_model.pt
+            if "eval_checkpoint" in configs and configs["eval_checkpoint"] is not None:
+                ckpt_path = configs["eval_checkpoint"]
+                print("=" * 20)
+                print("Evaluating segmentation for phase: ", phase, " with checkpoint: ")
+                print(ckpt_path)
+                print("=" * 20)
+            else:
+                ckpt_path = os.path.join(configs["checkpoint_path"], "best_model.pt")
+                print("=" * 20)
+                print("Evaluating segmentation for phase: ", phase, " with checkpoint: ")
+                print(ckpt_path)
+                print("=" * 20)
+
+            # Try to load state_dict first (preferred for inference with RViT wrapper)
+            ckpt_dir = os.path.dirname(ckpt_path)
+            state_dict_path = os.path.join(ckpt_dir, "best_model_state_dict.pt")
+            
+            if os.path.isfile(state_dict_path):
+                print(f"Loading model from state_dict: {state_dict_path}")
+                model = model_utils.create_model(configs)
+                state_dict = torch.load(state_dict_path, map_location="cpu", weights_only=False)
+                missing, unexpected = model.load_state_dict(state_dict, strict=False)
+                if missing:
+                    print(f"Warning: Missing keys when loading state_dict: {missing[:5]}...")
+                if unexpected:
+                    print(f"Warning: Unexpected keys when loading state_dict: {unexpected[:5]}...")
+            else:
+                # Fallback: load full model object
+                print(f"Loading full model object from checkpoint: {ckpt_path}")
+                model = torch.load(
+                    ckpt_path,
+                    map_location=configs["device"],
+                    weights_only=False,
+                )
+                
+                # If loaded model is not the expected type (e.g., not RViT/RViTUPerNet when rvit=True),
+                # try to extract state_dict and load into a newly created model
+                if configs.get("rvit", False) or configs.get("architecture") == "rvitupernet":
+                    from model_zoo.RViT import RViT
+                    from model_zoo.RViTUPerNet import RViTUPerNet
+                    
+                    # Check if loaded model is NOT an RViT/RViTUPerNet instance
+                    is_rvit = isinstance(model, RViT)
+                    is_rvitupernet = isinstance(model, RViTUPerNet)
+                    
+                    if not is_rvit and not is_rvitupernet:
+                        print(f"[WARNING] Loaded model type ({type(model)}) is not RViT/RViTUPerNet. "
+                              f"Extracting state_dict and loading into new RViT wrapper...")
+                        # Extract state_dict from loaded model
+                        if hasattr(model, "state_dict"):
+                            old_state_dict = model.state_dict()
+                            # Create new model with RViT wrapper
+                            model = model_utils.create_model(configs)
+                            missing, unexpected = model.load_state_dict(old_state_dict, strict=False)
+                            if missing:
+                                print(f"Warning: Missing keys when loading state_dict: {missing[:5]}...")
+                            if unexpected:
+                                print(f"Warning: Unexpected keys when loading state_dict: {unexpected[:5]}...")
+
+            # --- Inference-time masking wiring for RViT-based models ---
+            # Mark model as being in testing (inference) phase.
+            # RViT checks this flag plus its internal apply_mask_in_infer flag.
+            setattr(model, "testing", True)
+            # Ensure inference-time masking flag matches current configs, even for older checkpoints
+            # that were saved before the attribute existed.
+            setattr(model, "apply_mask_in_infer", configs.get("apply_mask_in_infer", False))
+            
+            # For architectures that wrap an RViT backbone (e.g., RViTUPerNet),
+            # also propagate the testing flag to the encoder/backbone if present.
+            if hasattr(model, "encoder"):  # RViTUPerNet uses encoder
+                setattr(model.encoder, "testing", True)
+                setattr(model.encoder, "apply_mask_in_infer", configs.get("apply_mask_in_infer", False))
+            elif hasattr(model, "backbone"):  # Some architectures use backbone
+                setattr(model.backbone, "testing", True)
+                setattr(model.backbone, "apply_mask_in_infer", configs.get("apply_mask_in_infer", False))
+
+            # Debug: print model type and key masking-related attributes
+            print(f"[DEBUG] Loaded model type: {type(model)}")
+            if hasattr(model, "encoder"):
+                print(f"[DEBUG] Model has encoder (RViTUPerNet): {type(model.encoder)}")
+                if hasattr(model.encoder, "implementation"):
+                    print(f"[DEBUG] RViT encoder implementation: {getattr(model.encoder, 'implementation')}")
+                if hasattr(model.encoder, "retain_percent"):
+                    print(f"[DEBUG] RViT encoder retain_percent: {getattr(model.encoder, 'retain_percent')}")
+            elif hasattr(model, "implementation"):
+                print(f"[DEBUG] RViT implementation: {getattr(model, 'implementation')}")
+            if hasattr(model, "retain_percent"):
+                print(f"[DEBUG] RViT retain_percent: {getattr(model, 'retain_percent')}")
+            print(f"[DEBUG] apply_mask_in_infer: {getattr(model, 'apply_mask_in_infer', None)}")
+            print(f"[DEBUG] testing flag on model: {getattr(model, 'testing', None)}")
+        except Exception as e:
+            print(f"Error loading model from checkpoint: {e}")
+            import traceback
+            traceback.print_exc()
+            # Fallback: create a fresh model so evaluation can still run
+            model = model_utils.create_model(configs)
+            setattr(model, "testing", True)
+            setattr(model, "apply_mask_in_infer", configs.get("apply_mask_in_infer", False))
+            if hasattr(model, "encoder"):
+                setattr(model.encoder, "testing", True)
+                setattr(model.encoder, "apply_mask_in_infer", configs.get("apply_mask_in_infer", False))
 
         # compile model (torch 2.0)
         # model = torch.compile(model)
@@ -233,7 +382,9 @@ def test(configs, phase, model=None, loader=None, criterion=None, epoch="Test"):
     model.eval()
     total_loss = 0.0
 
-    # Images to log to wandb
+    # Collect up to num_vis_images samples for combined (raw|GT|pred) visualization
+    num_vis_images = configs.get("num_vis_images", 15)
+    vis_samples = []  # list of (image, mask, prediction) tensors
     first_image = None
     first_prediction = None
     first_mask = None
@@ -254,6 +405,8 @@ def test(configs, phase, model=None, loader=None, criterion=None, epoch="Test"):
                 if not configs["linear_evaluation"] and not configs["fully_finetune"]:
                     if configs['architecture'] == 'rvitupernet':
                         out = model(image, label=label, keys=keys)
+                    elif configs['architecture'] == 'maskedresnet_unet':
+                        out, _ = model(image, label=label, keys=keys)  # Ignore mask in test
                     elif configs['architecture'] == 'unet':
                         out = model(image)
                     else:
@@ -262,8 +415,19 @@ def test(configs, phase, model=None, loader=None, criterion=None, epoch="Test"):
                     image = image[:, desired_indices, :, :]
                     out = model((image, spectral_keys))
 
-                if idx == 0:
-                    predictions = out.argmax(1)
+                # if idx == 0:
+                #     predictions = out.argmax(1)
+                predictions = out.argmax(1)
+                # Collect samples for combined visualization (up to num_vis_images)
+                for i in range(image.shape[0]):
+                    if len(vis_samples) >= num_vis_images:
+                        break
+                    vis_samples.append((
+                        image.detach().cpu()[i],
+                        label.detach().cpu()[i],
+                        predictions.detach().cpu()[i],
+                    ))
+                if first_image is None and image.shape[0] > 0:
                     first_image = image.detach().cpu()[0]
                     first_prediction = predictions.detach().cpu()[0]
                     first_mask = label.detach().cpu()[0]
@@ -284,6 +448,16 @@ def test(configs, phase, model=None, loader=None, criterion=None, epoch="Test"):
             # Log aggregated metrics (micro, macro, weighted)
             metric_value = metric.compute()
             log_dict[phase + " " + metric.average + " " + metric.__class__.__name__] = metric_value
+        elif getattr(metric, "flair_12", False):
+            # FLAIR paper metric: mIoU on first 12 classes only (indices 0–11, excluding "other")
+            per_class = metric.compute()
+            if per_class is not None and per_class.numel() >= 12:
+                first_12 = per_class[:12]
+                # Use nanmean so classes with no GT in this split don't make the metric NaN
+                miou_12 = torch.nanmean(first_12.to(torch.float32)).item()
+                if not (miou_12 == miou_12):  # NaN check
+                    miou_12 = 0.0
+                log_dict[phase + " macro JaccardIndex_12 (FLAIR paper)"] = miou_12
         # COMMENTED OUT: Per-class metrics computation for speed
         # else:
         #     # Always log per-class metrics (not just for test phase)
@@ -492,101 +666,105 @@ def test(configs, phase, model=None, loader=None, criterion=None, epoch="Test"):
 
     # ---------------------------
     # Visualization: Side-by-side comparison of raw image, ground truth, and prediction
-    if configs.get("log_images", False) and first_image is not None and first_mask is not None and first_prediction is not None:
+    # if configs.get("log_images", False) and first_image is not None and first_mask is not None and first_prediction is not None:
+       # Visualization: side-by-side (raw | ground truth | prediction) for up to num_vis_images samples
+    if configs.get("log_images", False) and vis_samples:
         try:
-            # Ensure first_image is in [C, H, W] format
-            # Check if image is already in [C, H, W] format (channels first)
-            if len(first_image.shape) == 3:
-                # If first dimension is large (likely height/width), assume [H, W, C] and permute
-                # If first dimension is small (likely channels), assume it's already [C, H, W]
-                if first_image.shape[0] > 100:  # Height/width is typically > 100, channels are typically < 20
-                    # Shape is likely [H, W, C], permute to [C, H, W]
-                    first_image = first_image.permute(2, 0, 1)
-                # Otherwise, assume it's already [C, H, W] format
+            # # Prepare raw image for visualization (first 3 channels, denormalized if needed)
+            # if configs["normalization"] == "standard":
+            #     # Extract only the first three values from the mean and std
+            #     denorm_mean = torch.tensor(configs["mean"])[:3] if len(configs["mean"]) >= 3 else torch.tensor(configs["mean"])
+            #     denorm_std = torch.tensor(configs["std"])[:3] if len(configs["std"]) >= 3 else torch.tensor(configs["std"])
+            #     # Extract the first three channels from the image for visualization
+            #     img_to_denorm = first_image[:3, :, :].unsqueeze(0)  # shape: [1, 3, H, W]
+            #     denormalizer = kornia.enhance.Denormalize(denorm_mean, denorm_std)
+            #     first_img_denorm = denormalizer(img_to_denorm).squeeze(0)
+            #     # Permute to H, W, C for display and scale to [0, 255]
+            #     first_img_disp = first_img_denorm.permute(1, 2, 0)
+            #     # Normalize to [0, 1] then scale to [0, 255]
+            #     img_min = first_img_disp.min()
+            #     img_max = first_img_disp.max()
+            #     if img_max > img_min:
+            #         first_img_disp = (first_img_disp - img_min) / (img_max - img_min)
+            #     first_img_disp = first_img_disp * 255
+            #     first_img_disp = first_img_disp.clamp(0, 255).detach().cpu().numpy().astype(np.uint8)
+            # else:
+            #     # If no normalization was applied, just use the first three channels
+            #     first_img_disp = first_image[:3, :, :].permute(1, 2, 0).detach().cpu().numpy()
+            #     # Scale to [0, 255] if needed
+            #     if first_img_disp.max() <= 1.0:
+            #         first_img_disp = (first_img_disp * 255).astype(np.uint8)
+            #     else:
+            #         first_img_disp = first_img_disp.clamp(0, 255).astype(np.uint8)
 
-            # Prepare raw image for visualization (first 3 channels, denormalized if needed)
-            if configs["normalization"] == "standard":
-                # Extract only the first three values from the mean and std
-                denorm_mean = torch.tensor(configs["mean"])[:3] if len(configs["mean"]) >= 3 else torch.tensor(configs["mean"])
-                denorm_std = torch.tensor(configs["std"])[:3] if len(configs["std"]) >= 3 else torch.tensor(configs["std"])
-                # Extract the first three channels from the image for visualization
-                img_to_denorm = first_image[:3, :, :].unsqueeze(0)  # shape: [1, 3, H, W]
-                denormalizer = kornia.enhance.Denormalize(denorm_mean, denorm_std)
-                first_img_denorm = denormalizer(img_to_denorm).squeeze(0)
-                # Permute to H, W, C for display and scale to [0, 255]
-                first_img_disp = first_img_denorm.permute(1, 2, 0)
-                # Normalize to [0, 1] then scale to [0, 255]
-                img_min = first_img_disp.min()
-                img_max = first_img_disp.max()
-                if img_max > img_min:
-                    first_img_disp = (first_img_disp - img_min) / (img_max - img_min)
-                first_img_disp = first_img_disp * 255
-                first_img_disp = first_img_disp.clamp(0, 255).detach().cpu().numpy().astype(np.uint8)
-            else:
-                # If no normalization was applied, just use the first three channels
-                first_img_disp = first_image[:3, :, :].permute(1, 2, 0).detach().cpu().numpy()
-                # Scale to [0, 255] if needed
-                if first_img_disp.max() <= 1.0:
-                    first_img_disp = (first_img_disp * 255).astype(np.uint8)
-                else:
-                    first_img_disp = first_img_disp.clamp(0, 255).astype(np.uint8)
+            # # Get ground truth and prediction as numpy arrays
+            # gt_np = first_mask.detach().cpu().numpy().astype(np.int32)
+            # pred_np = first_prediction.detach().cpu().numpy().astype(np.int32)
 
-            # Get ground truth and prediction as numpy arrays
-            gt_np = first_mask.detach().cpu().numpy().astype(np.int32)
-            pred_np = first_prediction.detach().cpu().numpy().astype(np.int32)
+            # # Apply colormap to masks for better visualization
+            # colormap = cm.get_cmap('tab20', configs["num_classes"])
+            #
+            # # Normalize masks to [0, 1] for colormap
+            # if configs["num_classes"] > 1:
+            #     gt_normalized = gt_np.astype(np.float32) / (configs["num_classes"] - 1)
+            #     pred_normalized = pred_np.astype(np.float32) / (configs["num_classes"] - 1)
+            # else:
+            #     gt_normalized = gt_np.astype(np.float32)
+            #     pred_normalized = pred_np.astype(np.float32)
+            #
+            # # Apply colormap
+            # gt_colored = colormap(gt_normalized)[:, :, :3]  # Get RGB, ignore alpha
+            # pred_colored = colormap(pred_normalized)[:, :, :3]
+            # gt_colored = (gt_colored * 255).astype(np.uint8)
+            # pred_colored = (pred_colored * 255).astype(np.uint8)
 
-            # Apply colormap to masks for better visualization
-            colormap = cm.get_cmap('tab20', configs["num_classes"])
-            
-            # Normalize masks to [0, 1] for colormap
-            if configs["num_classes"] > 1:
-                gt_normalized = gt_np.astype(np.float32) / (configs["num_classes"] - 1)
-                pred_normalized = pred_np.astype(np.float32) / (configs["num_classes"] - 1)
-            else:
-                gt_normalized = gt_np.astype(np.float32)
-                pred_normalized = pred_np.astype(np.float32)
-            
-            # Apply colormap
-            gt_colored = colormap(gt_normalized)[:, :, :3]  # Get RGB, ignore alpha
-            pred_colored = colormap(pred_normalized)[:, :, :3]
-            gt_colored = (gt_colored * 255).astype(np.uint8)
-            pred_colored = (pred_colored * 255).astype(np.uint8)
-
-            # Create side-by-side visualization using PIL (avoids matplotlib rendering issues)
-            h, w = first_img_disp.shape[:2]
-            combined_width = w * 3
-            combined_image = np.zeros((h, combined_width, 3), dtype=np.uint8)
-            
-            # Place images side by side
-            combined_image[:, 0:w, :] = first_img_disp
-            combined_image[:, w:2*w, :] = gt_colored
-            combined_image[:, 2*w:3*w, :] = pred_colored
-            
-            # Convert to PIL Image for saving/logging
-            combined_pil = Image.fromarray(combined_image)
-            
-            # Save figure if checkpoint path is available
-            if "checkpoint_path" in configs and configs["checkpoint_path"]:
-                os.makedirs(configs["checkpoint_path"], exist_ok=True)
-                save_path = os.path.join(configs["checkpoint_path"], f"{phase}_visualization_epoch_{epoch}.png")
-                combined_pil.save(save_path)
-                print(f"Saved visualization to: {save_path}")
-            
-            # Log to wandb if enabled
-            if configs.get("wandb", False) and wandb.run:
-                # Log the combined side-by-side image
-                wandb.log({f"{phase}_visualization_combined": wandb.Image(combined_pil)})
-                
-                # Also log individual images for better wandb interaction
-                wandb.log({
-                    f"{phase}_raw_image": wandb.Image(first_img_disp),
-                    f"{phase}_ground_truth": wandb.Image(gt_colored),
-                    f"{phase}_prediction": wandb.Image(pred_colored),
-                })
-                print(f"✅ Logged visualization images to wandb: {phase}_visualization_combined, {phase}_raw_image, {phase}_ground_truth, {phase}_prediction")
-                
+            # # Create side-by-side visualization using PIL (avoids matplotlib rendering issues)
+            # h, w = first_img_disp.shape[:2]
+            # combined_width = w * 3
+            # combined_image = np.zeros((h, combined_width, 3), dtype=np.uint8)
+            #
+            # # Place images side by side
+            # combined_image[:, 0:w, :] = first_img_disp
+            # combined_image[:, w:2*w, :] = gt_colored
+            # combined_image[:, 2*w:3*w, :] = pred_colored
+            #
+            # # Convert to PIL Image for saving/logging
+            # combined_pil = Image.fromarray(combined_image)
+            #
+            # # Save figure if checkpoint path is available
+            # if "checkpoint_path" in configs and configs["checkpoint_path"]:
+            #     os.makedirs(configs["checkpoint_path"], exist_ok=True)
+            #     save_path = os.path.join(configs["checkpoint_path"], f"{phase}_visualization_epoch_{epoch}.png")
+            #     combined_pil.save(save_path)
+            #     print(f"Saved visualization to: {save_path}")
+            #
+            # # Log to wandb if enabled
+            # if configs.get("wandb", False) and wandb.run:
+            #     # Log the combined side-by-side image
+            #     wandb.log({f"{phase}_visualization_combined": wandb.Image(combined_pil)})
+            #
+            #     # Also log individual images for better wandb interaction
+            #     # wandb.log({
+            #     #     f"{phase}_raw_image": wandb.Image(first_img_disp),
+            #     #     f"{phase}_ground_truth": wandb.Image(gt_colored),
+            #     #     f"{phase}_prediction": wandb.Image(pred_colored),
+            #     # })
+            #     print(f"✅ Logged visualization images to wandb: {phase}_visualization_combined, {phase}_raw_image, {phase}_ground_truth, {phase}_prediction")
+            # Current logic: up to num_vis_images samples, each via make_combined_visualization(); log combined raw|GT|pred to wandb.
+            log_dict_vis = {}
+            for i, (img_t, mask_t, pred_t) in enumerate(vis_samples):
+                combined_pil = make_combined_visualization(img_t, mask_t, pred_t, configs)
+                if combined_pil is None:
+                    continue
+                if "checkpoint_path" in configs and configs["checkpoint_path"]:
+                    os.makedirs(configs["checkpoint_path"], exist_ok=True)
+                    save_path = os.path.join(configs["checkpoint_path"], f"{phase}_visualization_epoch_{epoch}_sample_{i}.png")
+                    combined_pil.save(save_path)
+                log_dict_vis[f"{phase}_visualization_combined_{i}"] = wandb.Image(combined_pil, caption=f"Sample {i}: raw | GT | pred")
+            if log_dict_vis and configs.get("wandb", False) and wandb.run:
+                wandb.log(log_dict_vis)
+                print(f"✅ Logged {len(log_dict_vis)} combined visualizations to wandb: {phase}_visualization_combined_0 .. _{len(log_dict_vis) - 1}")
         except Exception as e:
-            # If visualization fails, just skip it and continue
             print(f"Warning: Could not generate visualization due to: {e}")
             print("Continuing without visualization...")
 

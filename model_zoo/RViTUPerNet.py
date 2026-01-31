@@ -17,8 +17,19 @@ from segmentation_models_pytorch.base import (
 model_channels = {
     "vit_large_patch16_224": [1024, 768, 384, 192],
     "vit_base_patch16_224": [768, 512, 256, 128],
+    "vit_base_patch8_224": [768, 512, 256, 128],  # same embed_dim as vit_base_patch16_224
     "vit_small_patch16_224": [384, 256, 128, 64],
     "vit_tiny_patch16_224": [192, 128, 64, 32],
+    # DINOv2 (patch14, pretrained on LVD-142M); use with backbone e.g. vit_base_patch14_dinov2.lvd142m
+    "vit_small_patch14_dinov2": [384, 256, 128, 64],
+    "vit_base_patch14_dinov2": [768, 512, 256, 128],
+    "vit_large_patch14_dinov2": [1024, 768, 384, 192],
+    "vit_giant_patch14_dinov2": [1408, 1024, 512, 256],
+    # DINOv2 with 4 register tokens (e.g. vit_base_patch14_reg4_dinov2.lvd142m)
+    "vit_small_patch14_reg4_dinov2": [384, 256, 128, 64],
+    "vit_base_patch14_reg4_dinov2": [768, 512, 256, 128],
+    "vit_large_patch14_reg4_dinov2": [1024, 768, 384, 192],
+    "vit_giant_patch14_reg4_dinov2": [1408, 1024, 512, 256],
 }
 
 
@@ -172,14 +183,25 @@ def closest_divisible_by_2(num):
     # Round to the nearest even number
     return num if num % 2 == 0 else num + 1 if num > 0 else num - 1
 
+def _get_encoder_channels(backbone_name):
+    """Resolve encoder channel list by backbone name; supports timm variant suffixes (e.g. .augreg2_in21k_ft_in1k)."""
+    if backbone_name in model_channels:
+        return model_channels[backbone_name]
+    base_name = backbone_name.split(".")[0]
+    if base_name in model_channels:
+        return model_channels[base_name]
+    raise KeyError(f"Unknown backbone '{backbone_name}'. Add it to model_channels in RViTUPerNet.py (base: '{base_name}').")
+
+
 class RViTUPerNet(nn.Module):
     def __init__(self, encoder, num_classes=21,decoder_segmentation_channels=64,pyramid_channels=256,activation=None,output_size=(128,128)):
         super(RViTUPerNet, self).__init__()
         self.encoder = encoder  # Use RViT as the encoder
         self.plot_img = True
         self.plot_cnt = 0
+        channels = _get_encoder_channels(encoder.backbone)
         self.decoder = UPerNetDecoder(
-            encoder_channels=model_channels[encoder.backbone],  # Adjust according to RViT's output feature sizes
+            encoder_channels=channels,  # Adjust according to RViT's output feature sizes
             pyramid_channels=pyramid_channels,
             segmentation_channels=decoder_segmentation_channels,
             output_size=output_size,
@@ -196,15 +218,16 @@ class RViTUPerNet(nn.Module):
         #Calculate reshaped features
         for i in range(4):
             resized_tokens = shapes[i]*shapes[i]
-            reshaped_features.append(int((num_tokens/resized_tokens)*feature_size))            
+            reshaped_features.append(int((num_tokens/resized_tokens)*feature_size))
+        self.reshaped_features = reshaped_features  # for token-grid normalization (e.g. DINOv2 37x37 -> 36x36)
         
         #print(self.shapes)
 
         #print("reshaped features: ",reshaped_features)
-        self.proj1 =  nn.Conv2d(reshaped_features[0], model_channels[encoder.backbone][0], kernel_size=1, stride=1, padding=0)
-        self.proj2 = nn.Conv2d(reshaped_features[1], model_channels[encoder.backbone][1], kernel_size=1, stride=1, padding=0)
-        self.proj3 = nn.Conv2d(reshaped_features[2], model_channels[encoder.backbone][2], kernel_size=1, stride=1, padding=0)
-        self.proj4 = nn.Conv2d(reshaped_features[3], model_channels[encoder.backbone][3], kernel_size=1, stride=1, padding=0)
+        self.proj1 =  nn.Conv2d(reshaped_features[0], channels[0], kernel_size=1, stride=1, padding=0)
+        self.proj2 = nn.Conv2d(reshaped_features[1], channels[1], kernel_size=1, stride=1, padding=0)
+        self.proj3 = nn.Conv2d(reshaped_features[2], channels[2], kernel_size=1, stride=1, padding=0)
+        self.proj4 = nn.Conv2d(reshaped_features[3], channels[3], kernel_size=1, stride=1, padding=0)
         
         self.proj = nn.Sequential(self.proj1, self.proj2, self.proj3, self.proj4)
 
@@ -260,28 +283,84 @@ class RViTUPerNet(nn.Module):
                 #"Retained Patches": patch_mask.sum() / total_patches
             })
 
+    def _normalize_token_grid_to_expected(self, first_stage_tokens):
+        """When encoder token count != height^2 (e.g. DINOv2 37x37=1369 vs expected 36x36=1296),
+        interpolate to expected grid and build 4 decoder stages from the single normalized map."""
+        B, num_tokens, C = first_stage_tokens.shape
+        h = w = int(round(num_tokens ** 0.5))
+        if h * w != num_tokens:
+            raise RuntimeError("Token count {} is not a perfect square.".format(num_tokens))
+        # (B, C, h, w) e.g. (B, 768, 37, 37) -> interpolate to (B, 768, 36, 36)
+        x = first_stage_tokens.permute(0, 2, 1).contiguous().view(B, C, h, w)
+        x = F.interpolate(x, size=(self.height, self.height), mode="bilinear", align_corners=False)
+        out0 = self.proj[0](x)
+        # Stage 1: 2x2 rearrange (B, C, 36, 36) -> (B, 3072, 18, 18)
+        s1 = self.shapes[1]
+        x_18 = x.view(B, C, 2, s1, 2, s1).permute(0, 1, 2, 4, 3, 5).contiguous().view(B, self.reshaped_features[1], s1, s1)
+        out1 = self.proj[1](x_18)
+        # Stage 2: interpolate, repeat channels to match reshaped_features[2]
+        s2, s3 = self.shapes[2], self.shapes[3]
+        x_10 = F.interpolate(x, size=(s2, s2), mode="bilinear", align_corners=False)
+        n2 = self.reshaped_features[2]
+        repeat2 = (n2 + C - 1) // C
+        x_10 = x_10.repeat(1, repeat2, 1, 1)[:, :n2]
+        out2 = self.proj[2](x_10)
+        # Stage 3: interpolate to 4x4, repeat channels
+        x_4 = F.interpolate(x, size=(s3, s3), mode="bilinear", align_corners=False)
+        n3 = self.reshaped_features[3]
+        repeat3 = (n3 + C - 1) // C
+        x_4 = x_4.repeat(1, repeat3, 1, 1)[:, :n3]
+        out3 = self.proj[3](x_4)
+        return [out0, out1, out2, out3]
 
 
 
 
-
-
-    def forward(self, x, label=None):
+    def forward(self, x, label=None, keys=None, return_mask=False):
         
         raw_input = x.clone()
         # Extract multi-scale features from the encoder
-        features, mask, final_mask = self.encoder(x,label)    
+        # Pass keys to encoder if provided (needed for random_topx% implementation)
+        features, mask, final_mask = self.encoder(x, keys=keys, label=label)    
          
         height = width = 0
         decoder_list = []
+        
+        # Check if masking was applied during inference (features have fewer tokens than mask indicates)
+        # This happens when apply_mask_in_infer=True and masking reduces token count
+        is_masked_inference = (not self.training and mask is not None and 
+                              features[0].shape[1] < mask.shape[1])
+        
         for f in range(len(features)):
             height = width = self.shapes[f]
+            
             if self.training:
+                # Training mode: restore full spatial layout using mask
+                # All hierarchical stages have the same token count (no downsampling in blocks)
+                # So we restore all stages to the original token count using mask.shape[1]
+                decoder_tokens = torch.zeros((features[f].shape[0],mask.shape[1],features[f].shape[2]),device=features[f].device)
+                decoder_tokens = decoder_tokens.masked_scatter(mask.unsqueeze(-1),features[f])
+            elif is_masked_inference:
+                # Inference with masking: restore full spatial layout same as training
+                # All hierarchical stages have the same token count, so restore all using mask
                 decoder_tokens = torch.zeros((features[f].shape[0],mask.shape[1],features[f].shape[2]),device=features[f].device)
                 decoder_tokens = decoder_tokens.masked_scatter(mask.unsqueeze(-1),features[f])
             else:
+                # Standard inference without masking: use features directly
                 decoder_tokens = features[f]
-            decoder_tokens = decoder_tokens.permute(0, 2, 1).contiguous().view(decoder_tokens.shape[0],-1, height, width)
+            
+            # Reshape to spatial layout: [B, tokens, features] -> [B, features, H, W]
+            # The feature dimension is calculated as: (tokens * feat_dim) / (H * W)
+            #decoder_tokens = decoder_tokens.permute(0, 2, 1).contiguous().view(decoder_tokens.shape[0],-1, height, width)
+            num_tokens = decoder_tokens.shape[1]
+            expected_tokens = self.height * self.height
+            if num_tokens != expected_tokens:
+                # Normalize token grid (e.g. DINOv2 patch14 @ 512 gives 37x37=1369; decoder expects 36x36=1296)
+                decoder_list = self._normalize_token_grid_to_expected(decoder_tokens)
+                break
+            height = width = self.shapes[f]
+            decoder_tokens = decoder_tokens.permute(0, 2, 1).contiguous().view(decoder_tokens.shape[0], -1, height, width)
+            
             decoder_tokens = self.proj[f](decoder_tokens)
             decoder_list.append(decoder_tokens)
         
@@ -303,12 +382,30 @@ class RViTUPerNet(nn.Module):
             #self.visualization_output(raw_input, label, patch_size, num_patches_w, final_mask.shape[1], pred[0].detach().cpu().numpy())
             
         if self.training:
-            #Reshape mask to patch size x patch size
-            mask = mask.view(mask.shape[0], self.height, self.height).float().unsqueeze(1)
-            #Return the mask to the original size
-            mask = F.interpolate(mask, size=(out.shape[2], out.shape[3]), mode="nearest").squeeze()
+            # #Reshape mask to patch size x patch size
+            # mask = mask.view(mask.shape[0], self.height, self.height).float().unsqueeze(1)
+            # #Return the mask to the original size
+            # mask = F.interpolate(mask, size=(out.shape[2], out.shape[3]), mode="nearest").squeeze()
+            B = mask.shape[0]
+            num_tokens = mask.shape[1]
+            h = w = int(round(num_tokens ** 0.5))
+            mask = mask.view(B, h, w).float().unsqueeze(1)
+            if h != self.height:
+                mask = F.interpolate(mask, size=(self.height, self.height), mode="nearest")
+            mask = mask.squeeze(1)
+            # Return the mask to the original output size
+            mask = F.interpolate(mask.unsqueeze(1), size=(out.shape[2], out.shape[3]), mode="nearest").squeeze(1)
             return out, mask.bool()
         else:
+            if return_mask and mask is not None:
+                B, num_tokens = mask.shape[0], mask.shape[1]
+                h = w = int(round(num_tokens ** 0.5))
+                mask_img = mask.view(B, h, w).float().unsqueeze(1)
+                if h != self.height:
+                    mask_img = F.interpolate(mask_img, size=(self.height, self.height), mode="nearest")
+                mask_img = mask_img.squeeze(1)
+                mask_img = F.interpolate(mask_img.unsqueeze(1), size=(out.shape[2], out.shape[3]), mode="nearest").squeeze(1)
+                return out, mask_img.bool()
             return out
     
 

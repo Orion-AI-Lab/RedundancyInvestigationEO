@@ -1,14 +1,15 @@
 {
     "architecture": "rvitupernet",
-    "backbone": "vit_tiny_patch16_224",
+    //"backbone": "vit_base_patch14_dinov2.lvd142m", // DINOv2 pretrained
     "pyramid_channels": 256,
     "decoder_segmentation_channels": 64,
     "pretrained": true,
     "mask_threshold": 0.7,
     "rvit": true,
+    "apply_mask_in_infer": false,
     "mask_in_token_space": false,
-    "implementation": "max_len",
-    "retain_percent": 72,
+    "implementation": "topx%",
+    "retain_percent": 75,
     "pad_value": 0.0,
     "attention_mask": false
 }

@@ -24,10 +24,17 @@ torch.multiprocessing.set_sharing_strategy('file_system')
 
 
 def seed_everything(seed):
+    """Set all relevant RNG seeds and cuDNN for reproducible runs."""
     print("Setting seed to {}".format(seed))
+    random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
-    random.seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+    # Reproducible cuDNN: same algorithm choices and deterministic ops (may be slightly slower)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
 
 def store_experiment_id(configs):
@@ -50,7 +57,7 @@ def init_wandb(configs):
         resume="allow",
     )
     run = wandb.run
-    name = run.name
+    name = run.name if run is not None and run.name is not None else "unnamed_run"
     configs["wandb_run_name"] = name
     configs["wandb_run_id"] = id
     if "checkpoint_path" not in configs.keys():
@@ -98,6 +105,7 @@ if __name__ == "__main__":
     parser.add_argument("--retain_percent", default=None, type=int)
     parser.add_argument("--backbone", default=None, type=str)
     parser.add_argument("--pretrained", default=None, type=str2bool)
+    parser.add_argument("--apply_mask_in_infer", default=None, type=str2bool)
     #parser.add_argument("--patch_size", default=None, type=int)
 
     args = parser.parse_args()
@@ -108,6 +116,12 @@ if __name__ == "__main__":
     if args.seed is not None:
         configs["seed"] = args.seed
     seed_everything(configs["seed"])
+
+    # For test phase: optional deterministic inference so same checkpoint + same test set => same metrics
+    if configs.get("phase") == "test" and configs.get("deterministic_test", True):
+        torch.set_float32_matmul_precision("highest")  # Disable TF32 (non-deterministic on Ampere+)
+        configs["mixed_precision"] = False  # Disable autocast during test (float16 ops can be non-deterministic)
+        print("Deterministic test: TF32 disabled, mixed_precision disabled for reproducible evaluation.")
 
     # Setup wandb
     if configs["wandb"] and not configs["distributed"]:

@@ -99,33 +99,33 @@ def train_epoch(train_loader, model, optimizer, criterion, epoch, configs, scale
             first_sample_logged_training = False
 
             # ----------- WandB log first sample in training phase----------
-            if configs["wandb"]:
-                if idx == 0 and not first_sample_logged_training:
-                    img_to_log = image[0].detach().cpu()
+            # if configs["wandb"]:
+            #     if idx == 0 and not first_sample_logged_training:
+            #         img_to_log = image[0].detach().cpu()
 
-                    # if multi-channel hyperspectral, pick first 3 bands
-                    if img_to_log.shape[0] > 3:
-                        img_to_log = img_to_log[:3, :, :]
+            #         # if multi-channel hyperspectral, pick first 3 bands
+            #         if img_to_log.shape[0] > 3:
+            #             img_to_log = img_to_log[:3, :, :]
 
-                    # Convert normalized image to [0, 255] range for wandb
-                    # Clip extreme values to handle normalized data (mean 0, std 1 can have values outside [0,1])
-                    # Use percentile-based clipping to handle outliers
-                    img_min = img_to_log.quantile(0.01)
-                    img_max = img_to_log.quantile(0.99)
-                    img_to_log = torch.clamp(img_to_log, img_min, img_max)
-                    # Normalize to [0, 1]
-                    if img_max > img_min:
-                        img_to_log = (img_to_log - img_min) / (img_max - img_min)
-                    else:
-                        img_to_log = torch.zeros_like(img_to_log)
-                    # Scale to [0, 255] and convert to uint8
-                    img_to_log = (img_to_log * 255).clamp(0, 255).byte()
+            #         # Convert normalized image to [0, 255] range for wandb
+            #         # Clip extreme values to handle normalized data (mean 0, std 1 can have values outside [0,1])
+            #         # Use percentile-based clipping to handle outliers
+            #         img_min = img_to_log.quantile(0.01)
+            #         img_max = img_to_log.quantile(0.99)
+            #         img_to_log = torch.clamp(img_to_log, img_min, img_max)
+            #         # Normalize to [0, 1]
+            #         if img_max > img_min:
+            #             img_to_log = (img_to_log - img_min) / (img_max - img_min)
+            #         else:
+            #             img_to_log = torch.zeros_like(img_to_log)
+            #         # Scale to [0, 255] and convert to uint8
+            #         img_to_log = (img_to_log * 255).clamp(0, 255).byte()
 
-                    wandb.log({"sample_image": wandb.Image(img_to_log)})
+            #         wandb.log({"sample_image": wandb.Image(img_to_log)})
 
                 
                     
-                    first_sample_logged_training = True
+            #         first_sample_logged_training = True
                         # ---------------------------------------------
 
             if not configs["linear_evaluation"] and not configs["fully_finetune"]:
@@ -288,15 +288,50 @@ def test(configs, phase, model=None, loader=None, criterion=None, epoch="Test"):
 
             # Load model from checkpoint with error handling
             try:
-                # In PyTorch >= 2.6, torch.load defaults to weights_only=True.
-                # We explicitly set weights_only=False because this checkpoint
-                # was created by our own code and contains the full model object.
-                model = torch.load(
-                    os.path.join(configs["checkpoint_path"], "best_model.pt"),
-                    map_location=configs["device"],
-                    weights_only=False,
-                )
-                model.testing = True
+                # Prefer explicit eval_checkpoint if provided; otherwise fall back to checkpoint_path/best_model.pt
+                if "eval_checkpoint" in configs and configs["eval_checkpoint"] is not None:
+                    ckpt_path = configs["eval_checkpoint"]
+                else:
+                    ckpt_path = os.path.join(configs["checkpoint_path"], "best_model.pt")
+
+                # Try to load state_dict first (preferred for inference with RViT wrapper)
+                ckpt_dir = os.path.dirname(ckpt_path)
+                state_dict_path = os.path.join(ckpt_dir, "best_model_state_dict.pt")
+                
+                if os.path.isfile(state_dict_path):
+                    print(f"Loading model from state_dict: {state_dict_path}")
+                    model = model_utils.create_model(configs)
+                    state_dict = torch.load(state_dict_path, map_location="cpu", weights_only=False)
+                    missing, unexpected = model.load_state_dict(state_dict, strict=False)
+                    if missing:
+                        print(f"Warning: Missing keys when loading state_dict: {missing[:5]}...")
+                    if unexpected:
+                        print(f"Warning: Unexpected keys when loading state_dict: {unexpected[:5]}...")
+                else:
+                    # Fallback: load full model object
+                    print(f"Loading full model object from checkpoint: {ckpt_path}")
+                    model = torch.load(
+                        ckpt_path,
+                        map_location=configs["device"],
+                        weights_only=False,
+                    )
+
+                # --- Inference-time masking wiring for RViT-based models ---
+                # Mark model as being in testing (inference) phase.
+                # RViT checks this flag plus its internal apply_mask_in_infer flag.
+                setattr(model, "testing", True)
+                # Ensure inference-time masking flag matches current configs, even for older checkpoints
+                # that were saved before the attribute existed.
+                setattr(model, "apply_mask_in_infer", configs.get("apply_mask_in_infer", False))
+
+                # Debug: print model type and key masking-related attributes
+                print(f"[DEBUG] Loaded model type: {type(model)}")
+                if hasattr(model, "implementation"):
+                    print(f"[DEBUG] RViT implementation: {getattr(model, 'implementation')}")
+                if hasattr(model, "retain_percent"):
+                    print(f"[DEBUG] RViT retain_percent: {getattr(model, 'retain_percent')}")
+                print(f"[DEBUG] apply_mask_in_infer: {getattr(model, 'apply_mask_in_infer', None)}")
+                print(f"[DEBUG] testing flag on model: {getattr(model, 'testing', None)}")
             except Exception as e:
                 print(f"Error loading model from checkpoint: {e}")
                 # Fallback: create a fresh model so evaluation can still run

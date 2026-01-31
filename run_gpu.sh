@@ -28,38 +28,53 @@ fi
 #vit_backbones=("vit_base_patch32_224" "vit_base_patch16_224" "vit_base_patch8_224")
 #vit_backbones=("vit_base_patch16_224" "vit_base_patch32_224")
 #vit_backbones=("vit_base_patch32_224" "vit_base_patch16_224" "vit_base_patch8_224" "vit_base_patch4_224" "vit_base_patch2_224" )
-#patch_size=(4)
-vit_backbones=("vit_base_patch32_224")
+
+
+# Segmentation backbone: ResNet34 or DINOv2 (pretrained, encoder-only)
+#vit_backbones=("resnet34")
+#vit_backbones=("vit_base_patch14_dinov2.lvd142m")
+vit_backbones=("vit_base_patch16_224")
 
 
 #implementations=("topx%" "random_topx%" "max_len")
-implementations=("random_topx%")
+implementations=("random_topx%") # "topx%")
 #implementations=("max_len")
 
 mask_thresholds=(1.0)
 #mask_thresholds=(0.95 0.9)
+#retain_percents=(100)
+retain_percents=(100 90 80 70 60 50 40 30 20 10 5)
 #retain_percents=(100 85 50 40 25 15 5)
-retain_percents=(25) #15)
 
 # Pretrained weights setting (true/false)
 # Set to "true" to use pretrained weights, "false" to train from scratch
 # If empty/unset, uses the value from method config file
+
 PRETRAINED="false"
 
 # Fixed configuration files and seed (adjust these paths as needed)
-#main_config="configs/main_configs/bigearthnet.json"
-main_config="configs/main_configs/mlrsnet.json"
+main_config="configs/main_configs/bigearthnet.json"
+#main_config="configs/main_configs/mlrsnet.json"
 #main_config="configs/main_configs/woody.json"
 #main_config="configs/main_configs/flair.json"
 #main_config="configs/main_configs/marida.json"
 method_config="configs/method/classification/rvit.json"
 #method_config="configs/method/segmentation/rvitupernet.json"
-#training_config="configs/training/training_per_dataset/rvit/bigearthnet_training.json"
-training_config="configs/training/training_per_dataset/rvit/mlrsnet_training.json"
+#method_config="configs/method/segmentation/unet34.json"
+training_config="configs/training/training_per_dataset/rvit/bigearthnet_training.json"
+#training_config="configs/training/training_per_dataset/rvit/mlrsnet_training.json"
 #training_config="configs/training/training_per_dataset/rvitupernet/woody_training.json"
-#training_config="configs/training/training_per_dataset/woody_training.json"
+#training_config="configs/training/training_per_dataset/rvitupernet/flair_training.json"
+#training_config="configs/training/training_per_dataset/rvitupernet/flair_training_optimized.json"
+#training_config="configs/training/training_per_dataset/unet/flair_training_baseline.json"
+#training_config="configs/training/training_per_dataset/rvit/bigearthnet_from_flair_training.json"
+
 
 seed=222
+
+# Toggle inference masking: true = apply mask at test (e.g. for efficiency); false = use all tokens at test (best IoU).
+# With random_topx% + retain_percent 100, use false to compare; use true only if you want masked inference.
+APPLY_MASK_IN_INFER="true"
 
 # Handle GPU configuration
 if [ -n "$GPU_NUM" ]; then
@@ -139,7 +154,7 @@ for backbone in "${vit_backbones[@]}"; do
     elif [[ "$impl" == "topx%" || "$impl" == "random_topx%" ]]; then
       attn_mask=False
       for retain_percent in "${retain_percents[@]}"; do
-        echo "Running experiment with backbone=$backbone, implementation=$impl, retain_percent=$retain_percent, attention_mask=$attn_mask, seed=$seed"
+        echo "Running experiment with backbone=$backbone, implementation=$impl, retain_percent=$retain_percent, apply_mask_in_infer=$APPLY_MASK_IN_INFER, seed=$seed"
         python main.py --config="$main_config" \
                        --seed="$seed" \
                        --method="$method_config" \
@@ -148,6 +163,7 @@ for backbone in "${vit_backbones[@]}"; do
                        --implementation="$impl" \
                        --retain_percent="$retain_percent" \
                        --attention_mask="$attn_mask" \
+                       --apply_mask_in_infer="$APPLY_MASK_IN_INFER" \
                        ${PRETRAINED:+--pretrained="$PRETRAINED"} \
                        #--patch_size="$patch_size"
         wait
