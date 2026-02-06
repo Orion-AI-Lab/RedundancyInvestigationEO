@@ -321,13 +321,12 @@ class RViTUPerNet(nn.Module):
         raw_input = x.clone()
         # Extract multi-scale features from the encoder
         # Pass keys to encoder if provided (needed for random_topx% implementation)
-        features, mask, final_mask = self.encoder(x, keys=keys, label=label)    
+        features, mask, final_mask = self.encoder(x, keys=keys, label=label)
          
         height = width = 0
         decoder_list = []
         
         # Check if masking was applied during inference (features have fewer tokens than mask indicates)
-        # This happens when apply_mask_in_infer=True and masking reduces token count
         is_masked_inference = (not self.training and mask is not None and 
                               features[0].shape[1] < mask.shape[1])
         
@@ -338,20 +337,17 @@ class RViTUPerNet(nn.Module):
                 # Training mode: restore full spatial layout using mask
                 # All hierarchical stages have the same token count (no downsampling in blocks)
                 # So we restore all stages to the original token count using mask.shape[1]
-                decoder_tokens = torch.zeros((features[f].shape[0],mask.shape[1],features[f].shape[2]),device=features[f].device)
-                decoder_tokens = decoder_tokens.masked_scatter(mask.unsqueeze(-1),features[f])
+                decoder_tokens = torch.zeros((features[f].shape[0], mask.shape[1], features[f].shape[2]), device=features[f].device)
+                decoder_tokens = decoder_tokens.masked_scatter(mask.unsqueeze(-1), features[f])
             elif is_masked_inference:
                 # Inference with masking: restore full spatial layout same as training
-                # All hierarchical stages have the same token count, so restore all using mask
-                decoder_tokens = torch.zeros((features[f].shape[0],mask.shape[1],features[f].shape[2]),device=features[f].device)
-                decoder_tokens = decoder_tokens.masked_scatter(mask.unsqueeze(-1),features[f])
+                decoder_tokens = torch.zeros((features[f].shape[0], mask.shape[1], features[f].shape[2]), device=features[f].device)
+                decoder_tokens = decoder_tokens.masked_scatter(mask.unsqueeze(-1), features[f])
             else:
                 # Standard inference without masking: use features directly
                 decoder_tokens = features[f]
             
             # Reshape to spatial layout: [B, tokens, features] -> [B, features, H, W]
-            # The feature dimension is calculated as: (tokens * feat_dim) / (H * W)
-            #decoder_tokens = decoder_tokens.permute(0, 2, 1).contiguous().view(decoder_tokens.shape[0],-1, height, width)
             num_tokens = decoder_tokens.shape[1]
             expected_tokens = self.height * self.height
             if num_tokens != expected_tokens:
@@ -360,7 +356,6 @@ class RViTUPerNet(nn.Module):
                 break
             height = width = self.shapes[f]
             decoder_tokens = decoder_tokens.permute(0, 2, 1).contiguous().view(decoder_tokens.shape[0], -1, height, width)
-            
             decoder_tokens = self.proj[f](decoder_tokens)
             decoder_list.append(decoder_tokens)
         
