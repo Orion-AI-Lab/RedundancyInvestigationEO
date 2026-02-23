@@ -1,13 +1,22 @@
 {
-    "epochs": 1,
+    "epochs": 45,
     "batch_size": 64,
-    "num_workers": 4,
-    "lr": 1e-5,
+    "num_workers": 8,
+    "samples_per_epoch": 38718, // Woody train size: run "python -m utilities.count_webdataset_train_samples --dataset woody" (or --config configs/main_configs/woody.json) and set this to the printed value
+    "lr": 5e-5,
     "weight_decay": 1e-4,
-    "schedule": "cos", // cosine with warmup
-    "warmup_epochs": 0, //epochs to warmup
-    "min_lr": 0, // minimum learning rate bound for cyclic schedulers that hit 0
-    "loss": "cross_entropy",
+    "schedule": "cos",
+    "warmup_epochs": 8,
+    "min_lr": 1e-6,
+    "loss": "ce_dice_weighted",
+    "class_weight_epsilon": 1.02,
+    "class_weight_max": 15,
+    "class_weight_max_batches": null,
+    "class_weights_path": "/mnt/nvme/tpapazaf/RedundancyInvestigation/configs/training/training_per_dataset/rvitupernet/woody_class_weights.pt",
+    "class_weights_save_path": null,//"/mnt/nvme/tpapazaf/RedundancyInvestigation/configs/training/training_per_dataset/rvitupernet/woody_class_weights.pt", // optional filename: flair_class_weights.pt
+    "class_weight_normalize": null, //"max_1",
+    "class_weight_normalize_min": 1.0,
+    "dice_weight": 0.75,
     "optimizer": "adam",
     "normalization": "standard", // Options: standard (0 mean, 1 std), min-max (min 0, max 1), none
     "augment": false,
@@ -15,11 +24,13 @@
         "micro",
         "macro",
         "weighted"
+        //"none" for per-class calculation
     ], // Options, micro, macro, none for per-class calculation
     "distributed": false,
-    "pin_memory": true,
-    "prefetch_factor": 2,
-    "persistent_workers": false,
+    "pin_memory": false,
+    "prefetch_factor": 32,
+    "early_stopping": 10,
+    "persistent_workers": true,
     "linear_evaluation": false, // set to true to evaluate a pretrained model
     "pretrained_model_path": null,
     "resume_checkpoint_path": null, // checkpoint to resume training
@@ -29,5 +40,8 @@
     "start_epoch": 0, // epoch to continue training
     "log_images": false,
     "debug_visualization": false, // log segmentation masks and images to wandb
-    "torch_compile": false
+    "torch_compile": false,
+    "log_timing_metrics": true,
+    "timing_log_interval": 500,
+    "log_timing_metrics_in_test": true, // when true and phase=test and apply_mask_in_infer=true, log test/inference_ms, test/throughput, test/peak_mem_mb, test/retain_percent, test/encoder_gflops (and test/encoder_ms for segmentation) to wandb every timing_log_interval batches; summary test/*_mean at end
 }

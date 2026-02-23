@@ -1,11 +1,11 @@
 {
     "dataset": "woody", // Options: All available datasets
-    "wandb": false,
-    "wandb_project": "RedundancyInvestigation_segmentation",
+    "wandb": true,
+    "wandb_project": "RedundancyInvestigation_inference_test2",
     "wandb_entity": "deepcube",
     "wandb_id_resume": null,
-    "phase": "train",
-    "eval_checkpoint": null, //"/home/mila/n/nikolaos.bountos/Projects/Forest-Monitoring-Benchmark/checkpoints/segmentation/woody/upernet/swin_base/brilliant-envelope-234/best_model.pt", // Checkpoint to evaluate on when phase=test. If null the last checkpoint will be used. If not null, the evaluation will be based on the provided checkpoint path.
+    "phase": "test",
+    "eval_checkpoint": "/mnt/bucket/tpapazaf/RedundancyInvestigation/Checkpoints/WoodyCheckpoints/segmentation/woody/rvitupernet/vit_base_patch16_224/sandy-meadow-219/best_model_state_dict.pt", // Checkpoint to evaluate on when phase=test. If null the last checkpoint will be used. If not null, the evaluation will be based on the provided checkpoint path.
     "device": "cuda:0",
     "mixed_precision": true,
     "seed": 999, // Seeds to consider [999, 222, 333]

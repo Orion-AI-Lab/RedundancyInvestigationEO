@@ -8,6 +8,16 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 # -------------------------
+# Deterministic pooling (replaces AdaptiveAvgPool2d for reproducibility)
+# -------------------------
+class _DeterministicGlobalAvgPool2d(nn.Module):
+    """Deterministic replacement for AdaptiveAvgPool2d((1,1)); uses mean."""
+
+    def forward(self, x):
+        return x.mean(dim=(2, 3), keepdim=True)
+
+
+# -------------------------
 # ResNet18 Backbone (unchanged)
 # -------------------------
 def conv3x3(in_channels, out_channels, stride=1):
@@ -42,7 +52,7 @@ class ResNet(nn.Module):
         self.layer2 = self._make_layer(block, 128, layers[1], stride=2)
         self.layer3 = self._make_layer(block, 256, layers[2], stride=2)
         self.layer4 = self._make_layer(block, 512, layers[3], stride=2)
-        self.avg_pool = nn.AdaptiveAvgPool2d((1, 1))
+        self.avg_pool = _DeterministicGlobalAvgPool2d()
         self.fc = nn.Linear(512, num_classes)
 
     def _make_layer(self, block, out_channels, blocks, stride=1):

@@ -11,6 +11,7 @@ import numpy as np
 import pyjson5 as json
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torchvision
 import torchvision.transforms as transforms
 import webdataset as wds
@@ -21,8 +22,6 @@ import warnings
 import albumentations as A
 
 import datasets
-import training.classification as classification
-import training.segmentation as segmentation
 
 import utilities.augmentations as augmentations
 import utilities.webdataset_writer as web_writer
@@ -199,6 +198,16 @@ def load_configs(args=None):
     training_configs = load_config_file(training_configs_path)
     config.update(training_configs)
 
+    # MARIDA: if marida_merge_debris_subclasses is True, use 8 thematic classes (merge 1–4 → 1)
+    # and ignore_index=8; otherwise 11 thematic classes and ignore_index=11.
+    if config.get("dataset") == "marida":
+        if config.get("marida_merge_debris_subclasses", False):
+            config["num_classes"] = 9
+            config["ignore_index"] = 8
+        else:
+            config["num_classes"] = 12
+            config["ignore_index"] = 11
+
     # Load normalization configs
     if config["normalization"] == "standard":
         stats_config_path = "configs/stats/stats.json"
@@ -208,7 +217,7 @@ def load_configs(args=None):
 
     # Load augmentation configurations
     if config["augment"]:
-        augmentation_configs_path = args.augmentation_config
+        augmentation_configs_path = args.augmentation_config or config.get("augmentation_config")
         if augmentation_configs_path is not None:
             augmentations_config = load_config_file(augmentation_configs_path)
             config.update(augmentations_config)
@@ -239,10 +248,20 @@ def load_configs(args=None):
         multimodal_mae_config_path = os.path.join("configs", "datasets", "all.json")
         multimodal_mae_config = load_config_file(multimodal_mae_config_path)
         mae_config = {
-            "modality_channels": multimodal_mae_config["modality_channels"],
-            "dataset_modality_index": multimodal_mae_config["dataset_modality_index"],
+            "modality_channels": dict(multimodal_mae_config["modality_channels"]),
+            "dataset_modality_index": dict(multimodal_mae_config["dataset_modality_index"]),
         }
+        # Merge in current dataset's modality config (e.g. mlrsnet) so it is not overwritten
+        if "modality_channels" in config:
+            mae_config["modality_channels"].update(config["modality_channels"])
+        if "dataset_modality_index" in config:
+            mae_config["dataset_modality_index"].update(config["dataset_modality_index"])
         config.update(mae_config)
+
+    # When rgb=true, dataloader slices to 3 channels (e.g. BigEarthNet B04,B03,B02). Model must expect 3 channels.
+    if config.get("rgb") and config.get("dataset") in ("bigearthnet", "sen12ms"):
+        config["in_channels"] = 3
+
     return config
 
 
@@ -259,6 +278,8 @@ def get_dataset(dataset_name, configs, mode):
         dataset = datasets.MLRSNetDataset.MLRSNetDataset(configs, mode)
     elif dataset_name.lower() == "bigearthnet":
         dataset = datasets.BigEarthNetDataset.BigEarthNetDataset(configs, mode)
+    elif dataset_name.lower() == "marida":
+        dataset = datasets.MaridaDataset.GenDEBRIS(configs, dataset_name, mode)
     else:
         print("Dataset not supported")
         exit(2)
@@ -308,18 +329,6 @@ def create_dataloaders(configs):
                                                         configs["backbone"] == "dinov2"):
             drop_last_eval = True
 
-    # Reproducible dataloading: same shuffle order and worker RNG across runs
-    base_seed = configs.get("seed", 0)
-
-    def _worker_init_fn(worker_id):
-        worker_seed = base_seed + worker_id
-        np.random.seed(worker_seed)
-        random.seed(worker_seed)
-        torch.manual_seed(worker_seed)
-
-    train_generator = torch.Generator()
-    train_generator.manual_seed(base_seed)
-
     train_loader = torch.utils.data.DataLoader(
         train_dataset,
         batch_size=configs["batch_size"],
@@ -328,8 +337,6 @@ def create_dataloaders(configs):
         pin_memory=configs["pin_memory"],
         drop_last=True,
         collate_fn=collate_function,
-        worker_init_fn=_worker_init_fn if configs["num_workers"] > 0 else None,
-        generator=train_generator,
     )
     val_loader = torch.utils.data.DataLoader(
         val_dataset,
@@ -373,8 +380,59 @@ def create_webdataset_loaders(
             image = torch.load(io.BytesIO(sample["image.pth"])).float()
             label = torch.load(io.BytesIO(sample["labels.pth"]))
             if configs['dataset']=='marida':
-                image = einops.rearrange(image, "h w c-> c h w")
-                label[label==-1] = 11
+                # MaridaDataset saves images in CHW format [C, H, W] after the fix
+                # But old webdatasets might have HWC format, so check and rearrange if needed
+                if len(image.shape) == 3:
+                    # Check if it's HWC (last dim matches in_channels) or CHW (first dim matches in_channels)
+                    if image.shape[-1] == configs['in_channels'] and image.shape[0] != configs['in_channels']:
+                        # It's HWC [H, W, C], rearrange to CHW [C, H, W]
+                        image = einops.rearrange(image, "h w c-> c h w")
+                    # Ensure it's CHW format [C, H, W] for normalization
+                    assert image.shape[0] == configs['in_channels'], f"Marida image should be CHW [C={configs['in_channels']}, H, W], got shape {image.shape}"
+                # Handle label remapping: no-data -1 -> 11 (unlabeled)
+                if isinstance(label, torch.Tensor):
+                    label[label == -1] = 11
+                elif isinstance(label, (int, np.integer)) and label == -1:
+                    label = 11
+
+                # MARIDA: merge debris subclasses 1–4 when marida_merge_debris_subclasses is True (8 thematic + ignore 8).
+                if configs.get("marida_merge_debris_subclasses", False) and isinstance(label, torch.Tensor):
+                    t = label.clone()
+                    mask_1_4 = (t >= 1) & (t <= 4)
+                    t[mask_1_4] = 1
+                    for old, new in [(5, 2), (6, 3), (7, 4), (8, 5), (9, 6), (10, 7)]:
+                        t[t == old] = new
+                    t[t == 11] = 8
+                    label = t
+
+                # Optional MARIDA patch-level filtering: keep only tiles whose fraction of
+                # non-11 patches is above a user-defined threshold (0-100).
+                thr = configs.get("marida_non11_patch_threshold", None)
+                if thr is not None and isinstance(label, torch.Tensor):
+                    patch_size = configs.get("finetuning_patch_size", 16)
+                    lbl = label
+                    if lbl.dim() == 3:
+                        # Some MARIDA labels might have shape [1, H, W]
+                        lbl = lbl.squeeze(0)
+                    if lbl.dim() != 2:
+                        raise ValueError(f"Expected MARIDA label to be 2D [H,W] or [1,H,W], got shape {label.shape}")
+                    h, w = lbl.shape
+                    pad_h = (patch_size - h % patch_size) % patch_size
+                    pad_w = (patch_size - w % patch_size) % patch_size
+                    # use current ignore_index (default 11 for MARIDA paper setup)
+                    ignore_label = configs.get("ignore_index", 11)
+                    lbl_padded = F.pad(lbl, (0, pad_w, 0, pad_h), value=ignore_label)
+                    Hp, Wp = lbl_padded.shape
+                    n_h = Hp // patch_size
+                    n_w = Wp // patch_size
+                    patches = lbl_padded.view(n_h, patch_size, n_w, patch_size).permute(0, 2, 1, 3)
+                    non11_patch_mask = (patches != ignore_label).any(dim=(-1, -2))
+                    num_non11_patches = non11_patch_mask.sum().item()
+                    total_patches = non11_patch_mask.numel()
+                    ratio = (num_non11_patches / total_patches * 100.0) if total_patches > 0 else 0.0
+                    if ratio < float(thr):
+                        # Skip this sample entirely
+                        continue
             if configs['dataset']=='mlrsnet':
                     label = label.float()
             if configs['dataset']=='sen12ms':
@@ -402,6 +460,9 @@ def create_webdataset_loaders(
                 image = image[:3, :, :]
                 if not configs["dataset"] == "woody":
                     label = torch.zeros(1)
+            if configs["dataset"] == "waititu" and image.shape[0] > configs["in_channels"]:
+                # Slice to in_channels only (e.g. 4 for full Waititu, or 3 for RGB-only)
+                image = image[: configs["in_channels"], :, :]
             if len(image.shape) > 3:
                 if not configs["timeseries"]:
                     random_index = random.randint(0, 3)
@@ -414,6 +475,7 @@ def create_webdataset_loaders(
                     or configs["dataset"] == "treesatai"
                     or configs["dataset"] == "forestnet"
                     or configs["dataset"] == "fivebillionpixels"
+                    or configs["dataset"] == "flair"
                     or configs["dataset"] == "flair2"
                     or configs["dataset"] == "bigearthnet"
                 ):
@@ -478,12 +540,13 @@ def create_webdataset_loaders(
                     exit(2)
                 if configs['dataset'] == 'bigearthnet':
                     if configs['rgb']:
-                        b = image[2,:,:]
-                        g = image[3,:,:]
-                        r = image[4,:,:]
+                        # Channel order: VV,VH,B01,B02,B03,B04,... → RGB = B04,B03,B02 = indices 5,4,3
+                        b = image[3,:,:]
+                        g = image[4,:,:]
+                        r = image[5,:,:]
                         image = torch.stack((r,g,b), dim=0)
-                        mean = list(reversed(configs["mean"][2:5]))
-                        std = list(reversed(configs["std"][2:5]))
+                        mean = list(reversed(configs["mean"][3:6]))
+                        std = list(reversed(configs["std"][3:6]))
                         normalization = transforms.Normalize(mean=mean, std=std)
                 if configs["dataset"] == "sen12ms":
                     if configs['rgb']:
@@ -531,8 +594,31 @@ def create_webdataset_loaders(
             image = torch.load(io.BytesIO(sample["image.pth"])).float()
             label = torch.load(io.BytesIO(sample["labels.pth"]))
             if configs['dataset']=='marida':
-                image = einops.rearrange(image, "h w c-> c h w")
-                label[label==-1] = 11
+                # Ensure MARIDA images are in CHW format [C, H, W], matching training path logic.
+                if len(image.shape) == 3:
+                    # If last dim matches in_channels and first doesn't, it's HWC -> convert to CHW
+                    if image.shape[-1] == configs['in_channels'] and image.shape[0] != configs['in_channels']:
+                        image = einops.rearrange(image, "h w c-> c h w")
+                    # Final safety check
+                    assert image.shape[0] == configs['in_channels'], (
+                        f"Marida image should be CHW [C={configs['in_channels']}, H, W], "
+                        f"got shape {image.shape}"
+                    )
+                # Handle label remapping: no-data -1 -> 11
+                if isinstance(label, torch.Tensor):
+                    label[label == -1] = 11
+                elif isinstance(label, (int, np.integer)) and label == -1:
+                    label = 11
+
+                # MARIDA: merge debris subclasses 1–4 when marida_merge_debris_subclasses is True (8 thematic + ignore 8).
+                if configs.get("marida_merge_debris_subclasses", False) and isinstance(label, torch.Tensor):
+                    t = label.clone()
+                    mask_1_4 = (t >= 1) & (t <= 4)
+                    t[mask_1_4] = 1
+                    for old, new in [(5, 2), (6, 3), (7, 4), (8, 5), (9, 6), (10, 7)]:
+                        t[t == old] = new
+                    t[t == 11] = 8
+                    label = t
             if configs['dataset']=='mlrsnet':
                     label = label.float()
               
@@ -548,6 +634,7 @@ def create_webdataset_loaders(
                     or configs["dataset"] == "treesatai"
                     or configs["dataset"] == "forestnet"
                     or configs["dataset"] == "fivebillionpixels"
+                    or configs["dataset"] == "flair"
                     or configs["dataset"] == "flair2"
                     or configs["dataset"] == "bigearthnet"
                 ):
@@ -583,6 +670,8 @@ def create_webdataset_loaders(
             if configs["dataset"] == "woody":
                 # Remove alpha channel from combined uav datasets (Some have it some don't)
                 image = image[:3, :, :]
+            if configs["dataset"] == "waititu" and image.shape[0] > configs["in_channels"]:
+                image = image[: configs["in_channels"], :, :]  # match dataset in_channels
             if configs["normalization"] == "minmax":
                     image /= image.max() + 1e-6
             elif configs["normalization"] == "standard":
@@ -591,12 +680,13 @@ def create_webdataset_loaders(
                     exit(2)
                 if configs['dataset'] == 'bigearthnet':
                     if configs['rgb']:
-                        b = image[2,:,:]
-                        g = image[3,:,:]
-                        r = image[4,:,:]
+                        # Channel order: VV,VH,B01,B02,B03,B04,... → RGB = B04,B03,B02 = indices 5,4,3
+                        b = image[3,:,:]
+                        g = image[4,:,:]
+                        r = image[5,:,:]
                         image = torch.stack((r,g,b), dim=0)
-                        mean = list(reversed(configs["mean"][2:5]))
-                        std = list(reversed(configs["std"][2:5]))
+                        mean = list(reversed(configs["mean"][3:6]))
+                        std = list(reversed(configs["std"][3:6]))
                         normalization = transforms.Normalize(mean=mean, std=std)
                 if "rgb" not in configs or (not configs['rgb'] and ('sar' not in configs or not configs['sar'])):
                     normalization = transforms.Normalize(mean=configs["mean"], std=configs["std"])
@@ -658,16 +748,31 @@ def create_webdataset_loaders(
     else:
         train_shards = all_train_shards
 
+    seed = configs.get("seed")
+    _shuffle_rng = random.Random(seed) if seed is not None else None  # wds.shuffle uses Random(pid+time) when rng=None
+    # Deterministic shard order: pre-shuffle with seed (WebDataset seed param not in all versions)
     if not self_supervised and not supervised_foundation:
-        train_dataset = wds.WebDataset(train_shards, shardshuffle=True, resampled=False).shuffle(
-            configs["webdataset_shuffle_size"]
-        )
+        if seed is not None:
+            shards_to_use = list(train_shards)
+            random.Random(seed).shuffle(shards_to_use)
+            train_dataset = wds.WebDataset(
+                shards_to_use, shardshuffle=False, resampled=False
+            ).shuffle(configs["webdataset_shuffle_size"], rng=_shuffle_rng)
+        else:
+            _ds = wds.WebDataset(train_shards, shardshuffle=True, resampled=False)
+            train_dataset = _ds.shuffle(configs["webdataset_shuffle_size"], rng=_shuffle_rng) if _shuffle_rng else _ds.shuffle(configs["webdataset_shuffle_size"])
         train_dataset = train_dataset.compose(get_patches)
         train_dataset = train_dataset.batched(configs["batch_size"], partial=False)
     elif supervised_foundation:
-        train_dataset = wds.WebDataset(train_shards, shardshuffle=True, resampled=resample_shards).shuffle(
-            configs["webdataset_shuffle_size"]
-        )
+        if seed is not None:
+            shards_to_use = list(train_shards)
+            random.Random(seed).shuffle(shards_to_use)
+            train_dataset = wds.WebDataset(
+                shards_to_use, shardshuffle=False, resampled=resample_shards
+            ).shuffle(configs["webdataset_shuffle_size"], rng=_shuffle_rng)
+        else:
+            _ds = wds.WebDataset(train_shards, shardshuffle=True, resampled=resample_shards)
+            train_dataset = _ds.shuffle(configs["webdataset_shuffle_size"], rng=_shuffle_rng) if _shuffle_rng else _ds.shuffle(configs["webdataset_shuffle_size"])
         train_dataset = train_dataset.compose(get_patches)
         train_dataset = train_dataset.batched(configs["batch_size"], partial=False)
     else:
@@ -693,14 +798,20 @@ def create_webdataset_loaders(
             train_dataset = wds.DataPipeline(
                 wds.ResampledShards(full_shards),
                 wds.tarfile_to_samples(),
-                wds.shuffle(configs["webdataset_shuffle_size"]),
+                wds.shuffle(configs["webdataset_shuffle_size"], rng=_shuffle_rng) if _shuffle_rng else wds.shuffle(configs["webdataset_shuffle_size"]),
                 get_patches,
                 wds.batched(configs["batch_size"], partial=False),
             )
         else:
-            train_dataset = wds.WebDataset(full_shards, shardshuffle=True, resampled=False).shuffle(
-                configs["webdataset_shuffle_size"]
-            )
+            if seed is not None:
+                shards_to_use = list(full_shards)
+                random.Random(seed).shuffle(shards_to_use)
+                train_dataset = wds.WebDataset(
+                    shards_to_use, shardshuffle=False, resampled=False
+                ).shuffle(configs["webdataset_shuffle_size"], rng=_shuffle_rng)
+            else:
+                _ds = wds.WebDataset(full_shards, shardshuffle=True, resampled=False)
+                train_dataset = _ds.shuffle(configs["webdataset_shuffle_size"], rng=_shuffle_rng) if _shuffle_rng else _ds.shuffle(configs["webdataset_shuffle_size"])
             train_dataset = train_dataset.compose(get_patches)
             train_dataset = train_dataset.batched(configs["batch_size"], partial=False)
 
@@ -710,11 +821,8 @@ def create_webdataset_loaders(
     # Eval/val loaders use get_patches_eval which don't return keys, so pin_memory works there
     use_pin_memory = False  # Always disable for training loaders due to keys in batch
 
-    # Reproducible WebDataset: seed workers so shuffle and augmentations are deterministic
-    _base_seed = configs.get("seed", 0)
-
-    def _webdataset_worker_init_fn(worker_id):
-        w_seed = _base_seed + worker_id
+    def worker_init_fn(worker_id):
+        w_seed = (seed if seed is not None else 0) + worker_id
         np.random.seed(w_seed)
         random.seed(w_seed)
         torch.manual_seed(w_seed)
@@ -727,7 +835,7 @@ def create_webdataset_loaders(
         pin_memory=use_pin_memory,
         prefetch_factor=configs["prefetch_factor"],
         persistent_workers=configs["persistent_workers"],
-        worker_init_fn=_webdataset_worker_init_fn if configs["num_workers"] > 0 else None,
+        worker_init_fn=worker_init_fn if configs["num_workers"] > 0 else None,
     )
     # REMOVED: Blocking double shuffle that causes GPU utilization spikes
     # The WebDataset already shuffles at line 677, so this second shuffle is redundant
@@ -850,6 +958,7 @@ def create_universal_supervised_webdataset_loader(configs):
 
 def initialize_metrics(configs):
     metrics = []
+    ign = configs.get("ignore_index", None)
     for metric in configs["metrics"]:
         for metric_aggregation_strategy in configs["metric_aggregation_strategy"]:
             if configs["multilabel"]:
@@ -907,6 +1016,7 @@ def initialize_metrics(configs):
                         average=metric_aggregation_strategy,
                         multidim_average="global",
                         num_classes=configs["num_classes"],
+                        ignore_index=ign,
                     ).to(configs["device"])
                 elif metric.lower() == "fscore":
                     m = F1Score(
@@ -914,6 +1024,7 @@ def initialize_metrics(configs):
                         num_classes=configs["num_classes"],
                         average=metric_aggregation_strategy,
                         multidim_average="global",
+                        ignore_index=ign,
                     ).to(configs["device"])
                 elif metric.lower() == "precision":
                     m = Precision(
@@ -921,6 +1032,7 @@ def initialize_metrics(configs):
                         average=metric_aggregation_strategy,
                         num_classes=configs["num_classes"],
                         multidim_average="global",
+                        ignore_index=ign,
                     ).to(configs["device"])
                 elif metric.lower() == "recall":
                     m = Recall(
@@ -928,12 +1040,14 @@ def initialize_metrics(configs):
                         average=metric_aggregation_strategy,
                         num_classes=configs["num_classes"],
                         multidim_average="global",
+                        ignore_index=ign,
                     ).to(configs["device"])
                 elif metric.lower() == "iou":
                     m = JaccardIndex(
                         task="multiclass",
                         num_classes=configs["num_classes"],
                         average=metric_aggregation_strategy,
+                        ignore_index=ign,
                     ).to(configs["device"])
                 else:
                     print("Metric: ", metric, " not supported!")
@@ -946,6 +1060,15 @@ def initialize_metrics(configs):
         m_12 = JaccardIndex(task="multiclass", num_classes=19, average="none").to(configs["device"])
         m_12.flair_12 = True  # mark for logging mean of first 12 classes only
         metrics.append(m_12)
+    # When ignore_index is set (e.g. MARIDA unlabeled=11): add macro IoU over all classes except that one (paper-style metric).
+    # Omit ignore_index in config for datasets like FLAIR to use standard loss/metrics without excluding any class.
+    if configs.get("task") == "segmentation" and configs.get("ignore_index") is not None:
+        ign = configs["ignore_index"]
+        m_ignore = JaccardIndex(
+            task="multiclass", num_classes=configs["num_classes"], average="none", ignore_index=ign
+        ).to(configs["device"])
+        m_ignore.exclude_ignore_index = ign  # for logging: mean over classes != ign
+        metrics.append(m_ignore)
     return tuple(metrics)
 
 
@@ -956,6 +1079,7 @@ def compute_class_weights_log_inverse(
     epsilon=1.02,
     max_weight=10.0,
     max_batches=None,
+    ignore_index=None,
 ):
     """
     Compute class weights from training set pixel frequencies using log-inverse weighting.
@@ -975,16 +1099,23 @@ def compute_class_weights_log_inverse(
     """
     import math
     count = [0] * num_classes
-    total = 0
+    total = 0  # number of valid (non-ignore) pixels
     n_batches = 0
     for batch in loader:
         label = batch[1]
         if not isinstance(label, torch.Tensor):
             continue
         label = label.long()
+        # Valid pixels are those within [0, num_classes) and, optionally, not equal to ignore_index
         valid = (label >= 0) & (label < num_classes)
+        if ignore_index is not None:
+            valid = valid & (label != ignore_index)
+
         for c in range(num_classes):
-            count[c] += (label == c).sum().item()
+            if ignore_index is not None and c == ignore_index:
+                # Skip ignore_index class entirely when accumulating counts
+                continue
+            count[c] += ((label == c) & valid).sum().item()
         total += valid.sum().item()
         n_batches += 1
         if n_batches % 50 == 0:
@@ -1009,25 +1140,60 @@ def compute_class_weights_log_inverse(
     return w_tensor
 
 
-class MulticlassDiceLoss(nn.Module):
-    """Multiclass Dice loss (soft Dice, macro over classes). Aligns with Jaccard/IoU."""
+# MARIDA paper-style static class weights (log-inverse on pixel distribution), after
+# aggregating the 4 water-related classes into Marine Water as done in their U-Net code
+# (see Kakogeorgiou et al., train.py in the MARIDA repository).
+# These 11 values correspond to classes 0..10 (thematic); class 11 is unlabeled/ignore.
+MARIDA_CLASS_DISTR_AGG = torch.tensor(
+    [0.00452, 0.00203, 0.00254, 0.00168, 0.00766,
+     0.15206, 0.23457, 0.35941, 0.00109, 0.20218, 0.03226],
+    dtype=torch.float32,
+)
 
-    def __init__(self, num_classes, smooth=1e-6):
+
+def marida_paper_class_weights(device, weight_param=1.03):
+    """
+    Return MARIDA paper-style class weights for segmentation (11 thematic classes).
+    weight[c] = 1 / log(weight_param + class_distr[c]), where class_distr is the
+    aggregated pixel distribution after merging water subclasses, matching the
+    original MARIDA U-Net training code.
+
+    The returned tensor has shape (12,), where indices 0..10 correspond to thematic
+    classes and index 11 (ignore/unlabeled) has neutral weight 1.0.
+    """
+    distr = MARIDA_CLASS_DISTR_AGG.to(device=device)
+    # 11 weights for classes 0..10
+    w11 = 1.0 / torch.log(weight_param + distr)
+    # Extend to 12 (add neutral weight for ignore class 11)
+    w12 = torch.ones(12, dtype=torch.float32, device=device)
+    w12[:11] = w11
+    return w12
+
+
+class MulticlassDiceLoss(nn.Module):
+    """Multiclass Dice loss (soft Dice, macro over classes). Aligns with Jaccard/IoU.
+    ignore_index: if set, that class is excluded from loss (e.g. unlabeled); only other classes are averaged."""
+
+    def __init__(self, num_classes, smooth=1e-6, ignore_index=None):
         super().__init__()
         self.num_classes = num_classes
         self.smooth = smooth
+        self.ignore_index = ignore_index
 
     def forward(self, logits, targets):
         # logits: [B, C, H, W], targets: [B, H, W] class indices
         probs = torch.softmax(logits, dim=1)
-        targets_one_hot = torch.nn.functional.one_hot(
-            targets.long().clamp(0, self.num_classes - 1), num_classes=self.num_classes
-        )
-        targets_one_hot = targets_one_hot.permute(0, 3, 1, 2).float()
+        valid = (targets >= 0) & (targets < self.num_classes)
+        if self.ignore_index is not None:
+            valid = valid & (targets != self.ignore_index)
+        valid = valid.float()
         dice_per_class = []
-        for c in range(self.num_classes):
-            pred_c = probs[:, c]
-            target_c = targets_one_hot[:, c]
+        classes_to_use = [c for c in range(self.num_classes) if c != self.ignore_index]
+        if not classes_to_use:
+            return logits.new_zeros(1).squeeze()
+        for c in classes_to_use:
+            pred_c = probs[:, c] * valid
+            target_c = ((targets == c).float() * valid)
             intersection = (pred_c * target_c).sum()
             union = pred_c.sum() + target_c.sum()
             dice_c = (2.0 * intersection + self.smooth) / (union + self.smooth)
@@ -1037,19 +1203,22 @@ class MulticlassDiceLoss(nn.Module):
 
 
 class CombinedCEPlusDiceLoss(nn.Module):
-    """Cross-Entropy + Dice. Optional mask for CE (e.g. redundancy masking)."""
+    """Cross-Entropy + Dice. Optional mask for CE (e.g. redundancy masking).
+    ignore_index: if set, those target pixels are excluded from both CE and Dice (e.g. MARIDA unlabeled=11)."""
 
-    def __init__(self, num_classes, dice_weight=0.5, dice_smooth=1e-6):
+    def __init__(self, num_classes, dice_weight=0.5, dice_smooth=1e-6, ignore_index=None):
         super().__init__()
         self.num_classes = num_classes
         self.dice_weight = dice_weight
-        self.dice = MulticlassDiceLoss(num_classes, smooth=dice_smooth)
+        self.ignore_index = ignore_index
+        self.dice = MulticlassDiceLoss(num_classes, smooth=dice_smooth, ignore_index=ignore_index)
 
     def forward(self, logits, targets, mask=None):
         # logits: [B, C, H, W], targets: [B, H, W]
+        ce_kw = {"ignore_index": self.ignore_index} if self.ignore_index is not None else {}
         if mask is not None:
             ce_per_pixel = torch.nn.functional.cross_entropy(
-                logits, targets.long(), reduction="none"
+                logits, targets.long(), reduction="none", **ce_kw
             )
             mask_float = mask.float()
             if mask_float.dim() == 2:
@@ -1060,9 +1229,11 @@ class CombinedCEPlusDiceLoss(nn.Module):
                     size=ce_per_pixel.shape[-2:],
                     mode="nearest",
                 ).squeeze(1)
+            if self.ignore_index is not None:
+                mask_float = mask_float * (targets != self.ignore_index).float()
             ce = (ce_per_pixel * mask_float).sum() / mask_float.sum().clamp(min=1.0)
         else:
-            ce = torch.nn.functional.cross_entropy(logits, targets.long())
+            ce = torch.nn.functional.cross_entropy(logits, targets.long(), **ce_kw)
         dice = self.dice(logits, targets)
         return ce + self.dice_weight * dice
 
@@ -1072,22 +1243,27 @@ class WeightedCEDiceLoss(nn.Module):
     Class-weighted Cross-Entropy + Dice for macro Jaccard / IoU.
     Weights computed e.g. via log-inverse: weight[c] = 1 / log(freq[c] + epsilon).
     Same interface as CombinedCEPlusDiceLoss (supports mask= for redundancy masking).
+    ignore_index: if set, those target pixels are excluded (e.g. MARIDA unlabeled=11).
     Loss = (1 - dice_weight) * WeightedCE + dice_weight * Dice.
     """
 
-    def __init__(self, num_classes, weights, dice_weight=0.5, dice_smooth=1e-6):
+    def __init__(self, num_classes, weights, dice_weight=0.5, dice_smooth=1e-6, ignore_index=None):
         super().__init__()
         self.num_classes = num_classes
         self.dice_weight = dice_weight
+        self.ignore_index = ignore_index
         self.register_buffer("class_weights", weights.float())
-        self.dice = MulticlassDiceLoss(num_classes, smooth=dice_smooth)
+        self.dice = MulticlassDiceLoss(num_classes, smooth=dice_smooth, ignore_index=ignore_index)
 
     def forward(self, logits, targets, mask=None):
         # logits: [B, C, H, W], targets: [B, H, W]; weights on same device as logits
         w = self.class_weights.to(logits.device)
+        ce_kw = {"weight": w}
+        if self.ignore_index is not None:
+            ce_kw["ignore_index"] = self.ignore_index
         if mask is not None:
             ce_per_pixel = torch.nn.functional.cross_entropy(
-                logits, targets.long(), weight=w, reduction="none"
+                logits, targets.long(), reduction="none", **ce_kw
             )
             mask_float = mask.float()
             if mask_float.dim() == 2:
@@ -1098,21 +1274,77 @@ class WeightedCEDiceLoss(nn.Module):
                     size=ce_per_pixel.shape[-2:],
                     mode="nearest",
                 ).squeeze(1)
+            if self.ignore_index is not None:
+                mask_float = mask_float * (targets != self.ignore_index).float()
             ce = (ce_per_pixel * mask_float).sum() / mask_float.sum().clamp(min=1.0)
         else:
-            ce = torch.nn.functional.cross_entropy(
-                logits, targets.long(), weight=w
-            )
+            ce = torch.nn.functional.cross_entropy(logits, targets.long(), **ce_kw)
         dice = self.dice(logits, targets)
         return (1.0 - self.dice_weight) * ce + self.dice_weight * dice
 
 
+class MaridaWeightedBCELoss(nn.Module):
+    """
+    MARIDA-style per-class weighted BCE for single-label segmentation.
+    - logits:  [B, C, H, W]
+    - targets: [B, H, W] with values in {0..num_classes-1}; ignore_index optionally excluded.
+    Internally builds per-class one-hot masks and applies BCEWithLogitsLoss with per-class pos_weight.
+    """
+
+    def __init__(self, num_classes, pos_weights, ignore_index=None):
+        super().__init__()
+        self.num_classes = num_classes
+        self.ignore_index = ignore_index
+        # Register as buffer so it moves with the model and is saved in state_dict
+        self.register_buffer("pos_weights", pos_weights.float())
+
+    def forward(self, logits, targets):
+        # logits: [B, C, H, W], targets: [B, H, W]
+        B, C, H, W = logits.shape
+        assert C == self.num_classes, f"Expected C={self.num_classes}, got {C}"
+
+        # Build valid mask (exclude ignore_index if provided)
+        valid = (targets >= 0) & (targets < self.num_classes)
+        if self.ignore_index is not None:
+            valid = valid & (targets != self.ignore_index)
+        if not valid.any():
+            # No valid pixels in this batch; return zero to avoid NaNs
+            return logits.new_zeros([])
+
+        # Flatten spatial dims so we don't care about H/W ordering
+        # logits_flat: [N, C], targets_flat: [N], valid_flat: [N]
+        logits_flat = logits.permute(0, 2, 3, 1).contiguous().view(-1, C)
+        targets_flat = targets.contiguous().view(-1)
+        valid_flat = valid.contiguous().view(-1)
+
+        logits_flat = logits_flat[valid_flat]
+        targets_flat = targets_flat[valid_flat]
+
+        if logits_flat.numel() == 0:
+            return logits.new_zeros([])
+
+        # One-hot targets [N, C]
+        targets_oh = torch.nn.functional.one_hot(
+            targets_flat.clamp(0, self.num_classes - 1),
+            num_classes=self.num_classes,
+        ).to(dtype=logits.dtype, device=logits.device)
+
+        pos_w = self.pos_weights.to(logits.device)
+        bce = torch.nn.functional.binary_cross_entropy_with_logits(
+            logits_flat, targets_oh, pos_weight=pos_w
+        )
+        return bce
+
+
 def create_loss(configs):
+    # Optional ignore_index: exclude a target class from loss (e.g. MARIDA unlabeled=11). Set in dataset/training config; omit for FLAIR etc.
+    ignore_index = configs.get("ignore_index")
     if configs["loss"] == "cross_entropy":
         if configs["multilabel"]:
             return nn.BCEWithLogitsLoss()
         else:
-            return nn.CrossEntropyLoss()
+            kwargs = {} if ignore_index is None else {"ignore_index": ignore_index}
+            return nn.CrossEntropyLoss(**kwargs)
     elif configs["loss"] == "ce_dice":
         num_classes = configs.get("num_classes")
         if num_classes is None:
@@ -1121,6 +1353,7 @@ def create_loss(configs):
         return CombinedCEPlusDiceLoss(
             num_classes=num_classes,
             dice_weight=float(dice_weight),
+            ignore_index=ignore_index,
         )
     elif configs["loss"] == "ce_dice_weighted":
         num_classes = configs.get("num_classes")
@@ -1130,19 +1363,32 @@ def create_loss(configs):
         class_weights = configs.get("class_weights")
         if class_weights is None:
             # e.g. test-only run without precomputed weights: fall back to unweighted CE+Dice
-            # return CombinedCEPlusDiceLoss(
-            #     num_classes=num_classes,
-            #     dice_weight=float(dice_weight),
-            # )
             print("[ce_dice_weighted] class_weights not in config; using unweighted CE+Dice (e.g. test-only).")
             return CombinedCEPlusDiceLoss(
                 num_classes=num_classes,
                 dice_weight=float(dice_weight),
+                ignore_index=ignore_index,
             )
         return WeightedCEDiceLoss(
             num_classes=num_classes,
             weights=class_weights,
             dice_weight=float(dice_weight),
+            ignore_index=ignore_index,
+        )
+    elif configs["loss"] == "marida_bce":
+        # MARIDA-only BCE baseline with per-class pos_weights stored in configs["marida_pos_weights"]
+        if configs.get("dataset") != "marida":
+            raise ValueError("marida_bce loss is only supported for dataset='marida'")
+        num_classes = configs.get("num_classes")
+        if num_classes is None:
+            raise ValueError("num_classes required in config for marida_bce loss")
+        pos_weights = configs.get("marida_pos_weights")
+        if pos_weights is None:
+            raise ValueError("marida_pos_weights not set; compute it in training.segmentation.train() before create_loss")
+        return MaridaWeightedBCELoss(
+            num_classes=num_classes,
+            pos_weights=pos_weights,
+            ignore_index=ignore_index,
         )
     else:
         print("Loss not supported")
@@ -1160,9 +1406,11 @@ def create_optimizer(configs):
 
 def create_procedures(configs):
     if configs["task"] == "classification":
+        import training.classification as classification
         trainer = classification.train
         tester = classification.test
     elif configs["task"] == "segmentation":
+        import training.segmentation as segmentation
         trainer = segmentation.train
         tester = segmentation.test
     else:
@@ -1178,3 +1426,466 @@ def count_params(model):
     model_parameters = filter(lambda p: p.requires_grad, model.parameters())
     nb_params = sum([np.prod(p.size()) for p in model_parameters])
     return nb_params
+
+
+# ---------- Timing / gains metrics for wandb (redundancy investigation) ----------
+def get_gpu_util(device):
+    """Return current GPU utilization % (0-100) or None. Used for train/gpu_util_pct in wandb."""
+    if not torch.cuda.is_available():
+        return None
+    dev = device if isinstance(device, torch.device) else torch.device(device)
+    if dev.type != "cuda":
+        return None
+    idx = dev.index if dev.index is not None else 0
+    try:
+        import pynvml
+        pynvml.nvmlInit()
+        h = pynvml.nvmlDeviceGetHandleByIndex(idx)
+        return pynvml.nvmlDeviceGetUtilizationRates(h).gpu
+    except Exception:
+        pass
+    try:
+        import subprocess
+        out = subprocess.run(
+            ["nvidia-smi", "-i", str(idx), "--query-gpu=utilization.gpu", "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=2
+        )
+        if out.returncode == 0 and out.stdout.strip():
+            return int(out.stdout.strip().split("\n")[0].strip())
+    except Exception:
+        pass
+    return None
+
+
+# ViT backbone -> (embed_dim, num_heads, num_layers, patch_size) for GFLOPs estimate
+VIT_BACKBONE_PARAMS = {
+    "vit_tiny_patch16_224": (192, 3, 12, 16),
+    "vit_small_patch16_224": (384, 6, 12, 16),
+    "vit_small_patch32_224": (384, 6, 12, 32),
+    "vit_base_patch16_224": (768, 12, 12, 16),
+    "vit_base_patch32_224": (768, 12, 12, 32),
+    "vit_base_patch8_224": (768, 12, 12, 8),
+    "vit_large_patch16_224": (1024, 16, 24, 16),
+    "vit_base_patch14_dinov2.lvd142m": (768, 12, 12, 14),
+    "vit_small_patch14_dinov2": (384, 6, 12, 14),
+    "vit_large_patch14_dinov2": (1024, 16, 24, 14),
+}
+
+
+def estimate_vit_encoder_gflops(image_size, in_channels, retain_percent, backbone_name, batch_size=1):
+    """
+    Estimate encoder GFLOPs (billions of FLOPs) for one forward pass with given retain_percent.
+    Uses standard ViT formulas: patch embed + num_layers * (QKV + attention + proj + MLP).
+    N_eff = num_patches * retain_percent/100; FLOPs scale with N_eff (and N_eff^2 for attention).
+    Convention: 1 MAC = 1 FLOP (matches fvcore FlopCountAnalysis, so encoder_gflops aligns with measured full_gflops).
+    Returns GFLOPs per sample (batch_size=1) or total for batch; None if backbone unknown.
+    """
+    bn = backbone_name.split(".")[0].strip().lower() if isinstance(backbone_name, str) else ""
+    if bn not in VIT_BACKBONE_PARAMS:
+        return None
+    embed_dim, num_heads, num_layers, patch_size = VIT_BACKBONE_PARAMS[bn]
+    # Use integer division so non-divisible image_size (e.g. BigEarthNet 120 with patch_size 16) still get an estimate
+    num_patches = (image_size // patch_size) ** 2
+    if num_patches < 1:
+        return None
+    n_eff = max(1, int(num_patches * retain_percent / 100.0))
+    # Patch embed: 1 MAC per output element
+    flops_patch = in_channels * (patch_size ** 2) * num_patches * embed_dim
+    # Per block: QKV 3*N*embed_dim^2, attn 2*N^2*embed_dim (2 matmuls), proj N*embed_dim^2, MLP 8*N*embed_dim^2
+    flops_per_block = (
+        3 * n_eff * (embed_dim ** 2)
+        + 2 * (n_eff ** 2) * embed_dim
+        + n_eff * (embed_dim ** 2)
+        + 8 * n_eff * (embed_dim ** 2)
+    )
+    flops_total = (flops_patch + num_layers * flops_per_block) * batch_size
+    return flops_total / 1e9  # GFLOPs
+
+
+def estimate_full_architecture_gflops(image_size, in_channels, retain_percent, backbone_name, batch_size=1,
+                                       architecture="rvitupernet", pyramid_channels=256):
+    """
+    Estimate full-architecture GFLOPs (encoder + decoder for segmentation), same style as encoder_gflops.
+    For segmentation (rvitupernet): encoder_gflops + rough UPerNet decoder estimate.
+    For classification: encoder only, so returns encoder_gflops.
+    Log the result as full_gflops in wandb alongside encoder_gflops.
+    """
+    encoder_gflops = estimate_vit_encoder_gflops(
+        image_size, in_channels, retain_percent, backbone_name, batch_size=batch_size
+    )
+    if encoder_gflops is None:
+        return None
+    if architecture != "rvitupernet":
+        return encoder_gflops  # classification: full model is encoder only
+    # UPerNet decoder: rough FLOP estimate (projs + PSP + FPN + bottleneck + head)
+    bn = backbone_name.split(".")[0].strip().lower() if isinstance(backbone_name, str) else ""
+    if bn not in VIT_BACKBONE_PARAMS:
+        return encoder_gflops
+    _, _, _, patch_size = VIT_BACKBONE_PARAMS[bn]
+    num_patches = (image_size // patch_size) ** 2
+    if num_patches < 1:
+        return encoder_gflops
+    # Decoder: projs (1x1) + PSP/FPN/bottleneck/head. Channel list ~ [embed_dim, embed_dim/2, embed_dim/4, embed_dim/8]
+    embed_dim = VIT_BACKBONE_PARAMS[bn][0]
+    ch = [embed_dim, max(64, embed_dim // 2), max(64, embed_dim // 4), max(64, embed_dim // 8)]
+    # Proj convs: 1 MAC per output (1 MAC = 1 FLOP to match fvcore)
+    flops_proj = batch_size * num_patches * embed_dim * sum(ch)
+    # PSP + FPN + bottleneck + head: rough spatial * pyramid^2 * ops
+    height = image_size // patch_size
+    spatial = max(1, height) ** 2
+    flops_dec = batch_size * spatial * (pyramid_channels ** 2) * 25  # ~25 conv-like ops
+    flops_decoder = (flops_proj + flops_dec) / 1e9
+    return encoder_gflops + flops_decoder
+
+
+def make_gflop_measurement_inputs(configs, device, task="segmentation"):
+    """
+    Create synthetic inputs with fixed shape from configs for consistent GFLOP measurement.
+    Use this so train and test measure the same forward path (avoid different batch shapes).
+    """
+    batch_size = configs.get("batch_size", 1)
+    in_channels = configs.get("in_channels", 3)
+    img_size = configs.get("effective_image_size", configs.get("image_size", 224))
+    image = torch.zeros(batch_size, in_channels, img_size, img_size, device=device, dtype=torch.float32)
+    if task == "segmentation":
+        label = torch.zeros(batch_size, img_size, img_size, dtype=torch.long, device=device)
+        keys = [f"gflop_{i}" for i in range(batch_size)]
+        return image, {"label": label, "keys": keys}
+    return image, {}
+
+
+def estimate_full_model_gflops(model, *input_tensors, input_kwargs=None, measure_training_path=False):
+    """
+    Measure full-model GFLOPs via fvcore (or thop fallback).
+    Returns (full_gflops, encoder_gflops_fv) where encoder_gflops_fv is fvcore-measured encoder
+    GFLOPs (None if unavailable).
+
+    measure_training_path: If True, use model.train() so decoder takes scatter path (training cost).
+    If False, use model.eval() so decoder takes inference path (scatter when masking+retain<100%,
+    direct when retain=100% or no masking).
+    """
+    if not input_tensors:
+        return None, None
+
+    input_kwargs = input_kwargs or {}
+    original_mode = model.training
+    if measure_training_path:
+        model.train()
+    else:
+        model.eval()
+
+    # Force same code path for train and test: set testing=True and apply_mask_in_infer=True
+    # when model has masking (encoder or retain_percent). Training had use_mask=False -> different
+    # path (no padding, no cos_sim). Test had use_mask when apply_infer -> different FLOPs.
+    root_model = getattr(model, "module", model)
+    _saved = {}
+    for m, name in [(root_model, "root"), (getattr(root_model, "encoder", None), "encoder"),
+                    (getattr(root_model, "model", None), "model")]:
+        if m is None:
+            continue
+        has_masking = (getattr(m, "retain_percent", 100) <= 100 or
+                       hasattr(root_model, "encoder"))  # segmentation has encoder
+        if has_masking:
+            _saved[name] = (getattr(m, "testing", False), getattr(m, "apply_mask_in_infer", False))
+            setattr(m, "testing", True)
+            setattr(m, "apply_mask_in_infer", True)
+
+    def _restore_masking_state():
+        for m, name in [(root_model, "root"), (getattr(root_model, "encoder", None), "encoder"),
+                        (getattr(root_model, "model", None), "model")]:
+            if m is not None and name in _saved:
+                setattr(m, "testing", _saved[name][0])
+                setattr(m, "apply_mask_in_infer", _saved[name][1])
+
+    try:
+        from fvcore.nn import FlopCountAnalysis
+        from fvcore.nn.jit_handles import elementwise_flop_counter, get_shape
+
+        with torch.no_grad():
+            if input_kwargs:
+                class _Wrapper(torch.nn.Module):
+                    def __init__(self, m, kwargs):
+                        super().__init__()
+                        self._m = m
+                        self._kwargs = kwargs
+                    def forward(self, *args):
+                        return self._m(*args, **self._kwargs)
+                target_module = _Wrapper(model, input_kwargs)
+            else:
+                target_module = model
+
+            flops_counter = FlopCountAnalysis(target_module, input_tensors)
+
+            def _sdpa_flop_jit(inputs, outputs):
+                q_shape = get_shape(inputs[0])
+                k_shape = get_shape(inputs[1])
+                if not q_shape or not k_shape or len(q_shape) < 4:
+                    return 0
+                B, H, L, D = q_shape
+                S = k_shape[2]
+                return 4 * B * H * L * S * D + 5 * B * H * L * S
+
+            def _linalg_vector_norm_flop_jit(inputs, outputs):
+                """~2*dim FLOPs per output element (squares + sum + sqrt)."""
+                inp_shape = get_shape(inputs[0])
+                out_shape = get_shape(outputs[0])
+                if not inp_shape or not out_shape:
+                    return 0
+                inp_numel = 1
+                for s in inp_shape:
+                    inp_numel *= s
+                out_numel = 1
+                for s in out_shape:
+                    out_numel *= s
+                dim_size = max(1, inp_numel // out_numel)
+                return out_numel * (2 * dim_size + 1)  # squares + sum + sqrt
+
+            def _zero_flop_jit(inputs, outputs):
+                """Suppress warning; op contributes negligible FLOPs."""
+                return 0
+
+            handlers = {
+                "aten::add": elementwise_flop_counter(0, 1),
+                "aten::rsub": elementwise_flop_counter(0, 1),
+                "aten::pad": elementwise_flop_counter(0, 0),
+                "aten::gelu": elementwise_flop_counter(0, 4),
+                "aten::scaled_dot_product_attention": _sdpa_flop_jit,
+                # Extra handlers to reduce fvcore warnings (random_topx%, cosine sim, etc.)
+                "aten::mul": elementwise_flop_counter(0, 1),
+                "aten::mul_": elementwise_flop_counter(0, 1),
+                "aten::div": elementwise_flop_counter(0, 1),
+                "aten::abs": elementwise_flop_counter(0, 1),
+                "aten::linalg_vector_norm": _linalg_vector_norm_flop_jit,
+                "aten::sort": _zero_flop_jit,
+                "aten::randperm": _zero_flop_jit,
+            }
+            flops_counter.set_op_handle(**handlers)
+            flops_counter.uncalled_modules_warnings(False)
+
+            full_gflops = flops_counter.total() / 1e9
+
+            # Encoder-only GFLOPs
+            encoder_gflops_fv = None
+
+            # Method 1: Direct encoder trace (segmentation: model.encoder)
+            root_model = getattr(model, "module", model)  # unwrap DDP/DP
+            if hasattr(root_model, "encoder"):
+                for use_kwargs in [True, False]:  # try with kwargs first, then without
+                    try:
+                        if use_kwargs and input_kwargs:
+                            class _EncWrapper(torch.nn.Module):
+                                def __init__(self, enc, kwargs):
+                                    super().__init__()
+                                    self._enc = enc
+                                    self._kwargs = kwargs
+                                def forward(self, *args):
+                                    return self._enc(*args, **self._kwargs)
+                            enc_mod = _EncWrapper(root_model.encoder, input_kwargs)
+                        else:
+                            enc_mod = root_model.encoder
+                        enc_counter = FlopCountAnalysis(enc_mod, input_tensors)
+                        enc_counter.set_op_handle(**handlers)
+                        enc_counter.uncalled_modules_warnings(False)
+                        encoder_gflops_fv = enc_counter.total() / 1e9
+                        break
+                    except Exception as e:
+                        if os.environ.get("DEBUG_ENCODER_GFLOPS"):
+                            import logging
+                            logging.getLogger(__name__).warning(
+                                "encoder_gflops_fv trace failed (use_kwargs=%s): %s", use_kwargs, e
+                            )
+                        continue
+
+            # Method 2: total(module_name) on full-model trace
+            if encoder_gflops_fv is None:
+                encoder_prefixes = ("_m.model", "model", "_m.encoder", "encoder")
+                for enc_path in encoder_prefixes:
+                    try:
+                        enc_total = flops_counter.total(enc_path)
+                        if "model" in enc_path:
+                            for head in (".fc", ".head"):
+                                try:
+                                    enc_total -= flops_counter.total(enc_path + head)
+                                except KeyError:
+                                    pass
+                        encoder_gflops_fv = enc_total / 1e9
+                        break
+                    except KeyError:
+                        continue
+
+            # Method 3: Fallback from by_module()
+            if encoder_gflops_fv is None:
+                try:
+                    by_mod = flops_counter.by_module()
+                    best_enc, best_flops = None, 0
+                    for mod_name, enc_total in by_mod.items():
+                        if enc_total <= 0:
+                            continue
+                        if mod_name == "encoder" or mod_name.endswith(".encoder"):
+                            if enc_total > best_flops:
+                                best_enc, best_flops = mod_name, enc_total
+                    if best_enc is not None:
+                        encoder_gflops_fv = best_flops / 1e9
+                except Exception:
+                    pass
+
+            _restore_masking_state()
+            model.train(original_mode)
+            return full_gflops, encoder_gflops_fv
+
+    except Exception:
+        _restore_masking_state()
+        model.train(original_mode)
+    try:
+        import thop
+        if measure_training_path:
+            model.train()
+        else:
+            model.eval()
+        with torch.no_grad():
+            if input_kwargs:
+                class _Wrapper(torch.nn.Module):
+                    def __init__(self, m, kwargs):
+                        super().__init__()
+                        self._m = m
+                        self._kwargs = kwargs
+                    def forward(self, *args):
+                        return self._m(*args, **self._kwargs)
+                wrapper = _Wrapper(model, input_kwargs)
+                out = thop.profile(wrapper, inputs=input_tensors, verbose=False)
+            else:
+                out = thop.profile(model, inputs=input_tensors, verbose=False)
+            if out is None:
+                _restore_masking_state()
+                return None, None
+            flops, _ = out
+        _restore_masking_state()
+        model.train(original_mode)
+        return flops / 1e9, None  # thop cannot provide encoder-only
+    except Exception:
+        _restore_masking_state()
+        model.train(original_mode)
+    return None, None
+
+
+def get_peak_memory_mb(device):
+    """Return peak GPU memory allocated (MB) for the given device. Uses the correct CUDA device so
+    peak is not 0 when training on a non-default GPU (e.g. cuda:4). Returns None if not CUDA."""
+    if not torch.cuda.is_available():
+        return None
+    dev = device if isinstance(device, torch.device) else torch.device(device)
+    if dev.type != "cuda":
+        return None
+    try:
+        return torch.cuda.max_memory_allocated(device=dev) / (1024 ** 2)
+    except Exception:
+        return None
+
+
+def reset_peak_memory_stats(device):
+    """Reset CUDA peak memory stats for the given device so next get_peak_memory_mb is per-epoch."""
+    if not torch.cuda.is_available():
+        return
+    dev = device if isinstance(device, torch.device) else torch.device(device)
+    if dev.type == "cuda":
+        try:
+            torch.cuda.reset_peak_memory_stats(dev)
+        except Exception:
+            pass
+
+
+def build_timing_log_dict(step_ms, full_forward_ms, peak_mem_mb, batch_size, retain_percent,
+                          encoder_ms=None, encoder_peak_mem_mb=None, gpu_util_pct=None, encoder_gflops=None,
+                          full_gflops=None, encoder_gflops_fv=None,
+                          baseline_encoder_throughput=None, baseline_encoder_peak_mem=None):
+    """Build wandb log dict for redundancy/gains metrics. Prefix keys with train/ for clarity."""
+    d = {
+        "train/step_ms": step_ms,
+        "train/full_forward_ms": full_forward_ms,
+        "train/peak_mem_mb": peak_mem_mb,
+        "train/throughput_samples_per_sec": batch_size / (step_ms / 1000.0) if step_ms and step_ms > 0 else None,
+        "train/retain_percent": retain_percent,
+    }
+    if encoder_ms is not None:
+        d["train/encoder_ms"] = encoder_ms
+        if batch_size and batch_size > 0 and encoder_ms > 0:
+            enc_tp = batch_size * 1000.0 / encoder_ms
+            d["train/encoder_throughput_samples_per_sec"] = enc_tp
+            if baseline_encoder_throughput and baseline_encoder_throughput > 0:
+                d["train/encoder_throughput_gain"] = enc_tp / baseline_encoder_throughput
+    if encoder_peak_mem_mb is not None:
+        d["train/encoder_peak_mem_mb"] = encoder_peak_mem_mb
+        if baseline_encoder_peak_mem and baseline_encoder_peak_mem > 0 and encoder_peak_mem_mb > 0:
+            d["train/encoder_peak_mem_gain"] = baseline_encoder_peak_mem / encoder_peak_mem_mb
+    if gpu_util_pct is not None:
+        d["train/gpu_util_pct"] = gpu_util_pct
+    if encoder_gflops is not None:
+        d["train/encoder_gflops"] = encoder_gflops
+    if full_gflops is not None:
+        d["train/full_gflops"] = full_gflops
+        if batch_size and batch_size > 0:
+            d["train/full_gflops_per_sample"] = full_gflops / batch_size
+    if encoder_gflops_fv is not None:
+        d["train/encoder_gflops_fv"] = encoder_gflops_fv
+        if batch_size and batch_size > 0:
+            d["train/encoder_gflops_fv_per_sample"] = encoder_gflops_fv / batch_size
+    return {k: v for k, v in d.items() if v is not None}
+
+
+def build_inference_timing_log_dict(inference_ms, peak_mem_mb, batch_size, retain_percent,
+                                    encoder_ms=None, encoder_peak_mem_mb=None, gpu_util_pct=None,
+                                    encoder_gflops=None, full_gflops=None, encoder_gflops_fv=None,
+                                    baseline_encoder_throughput=None, baseline_encoder_peak_mem=None,
+                                    prefix="test"):
+    """Build wandb log dict for inference-phase metrics (when apply_mask_in_infer true). Prefix keys with test/ by default."""
+    d = {
+        f"{prefix}/inference_ms": inference_ms,
+        f"{prefix}/throughput_samples_per_sec": batch_size / (inference_ms / 1000.0) if inference_ms and inference_ms > 0 else None,
+        f"{prefix}/peak_mem_mb": peak_mem_mb,
+        f"{prefix}/retain_percent": retain_percent,
+    }
+    if encoder_ms is not None:
+        d[f"{prefix}/encoder_ms"] = encoder_ms
+        if batch_size and batch_size > 0 and encoder_ms > 0:
+            enc_tp = batch_size * 1000.0 / encoder_ms
+            d[f"{prefix}/encoder_throughput_samples_per_sec"] = enc_tp
+            if baseline_encoder_throughput and baseline_encoder_throughput > 0:
+                d[f"{prefix}/encoder_throughput_gain"] = enc_tp / baseline_encoder_throughput
+    if encoder_peak_mem_mb is not None:
+        d[f"{prefix}/encoder_peak_mem_mb"] = encoder_peak_mem_mb
+        if baseline_encoder_peak_mem and baseline_encoder_peak_mem > 0 and encoder_peak_mem_mb > 0:
+            d[f"{prefix}/encoder_peak_mem_gain"] = baseline_encoder_peak_mem / encoder_peak_mem_mb
+    if gpu_util_pct is not None:
+        d[f"{prefix}/gpu_util_pct"] = gpu_util_pct
+    if encoder_gflops is not None:
+        d[f"{prefix}/encoder_gflops"] = encoder_gflops
+    if full_gflops is not None:
+        d[f"{prefix}/full_gflops"] = full_gflops
+        if batch_size and batch_size > 0:
+            d[f"{prefix}/full_gflops_per_sample"] = full_gflops / batch_size
+    if encoder_gflops_fv is not None:
+        d[f"{prefix}/encoder_gflops_fv"] = encoder_gflops_fv
+        if batch_size and batch_size > 0:
+            d[f"{prefix}/encoder_gflops_fv_per_sample"] = encoder_gflops_fv / batch_size
+    return {k: v for k, v in d.items() if v is not None}
+
+
+def compute_timing_summary(accumulator_list, include_std=True):
+    """
+    Compute mean (and optionally std) over a list of timing log dicts from training.
+    Returns a dict with keys like train/step_ms_mean, train/step_ms_std, etc.,
+    suitable for wandb.run.summary so runs can be compared in the Runs table.
+    """
+    if not accumulator_list:
+        return {}
+    summary = {}
+    keys = list(accumulator_list[0].keys())
+    for k in keys:
+        vals = [d[k] for d in accumulator_list if k in d and d[k] is not None]
+        if not vals:
+            continue
+        vals = np.array(vals, dtype=np.float64)
+        summary[f"{k}_mean"] = float(np.nanmean(vals))
+        if include_std and len(vals) > 1:
+            summary[f"{k}_std"] = float(np.nanstd(vals))
+    return summary

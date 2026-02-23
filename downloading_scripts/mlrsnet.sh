@@ -160,6 +160,86 @@ if [ -d "$full_path/Labels" ] && [ ! -d "$full_path/labels" ]; then
     mv "$full_path/Labels" "$full_path/labels"
 fi
 
+# --- 7b. APPLY ACTUAL LABEL NAMES TO CSVs (for visualization) ---
+# If Categories_names.xlsx exists in the dataset folder, extract the 60 label names from Sheet2
+# and set CSV column headers so the visualization script can load real names from labels/*.csv.
+# Categories_names.xlsx is usually included in the MLRSNet Mendeley ZIP; if missing, download from
+# https://github.com/cugbrs/MLRSNet or the Mendeley dataset page and place it in $full_path.
+if [ -d "$full_path/labels" ] && [ -f "$full_path/Categories_names.xlsx" ]; then
+    echo "Applying actual label names from Categories_names.xlsx to label CSVs..."
+    export MLRSNET_FULL_PATH="$full_path"
+    python3 << 'PYTHON_SCRIPT'
+import os
+import sys
+
+full_path = os.environ.get("MLRSNET_FULL_PATH")
+if not full_path or not os.path.isdir(os.path.join(full_path, "labels")):
+    sys.exit(0)
+
+labels_dir = os.path.join(full_path, "labels")
+xlsx_path = os.path.join(full_path, "Categories_names.xlsx")
+if not os.path.isfile(xlsx_path):
+    sys.exit(0)
+
+try:
+    import pandas as pd
+except ImportError:
+    print("  (pandas not installed; skipping label name update)")
+    sys.exit(0)
+
+try:
+    sheet2 = pd.read_excel(xlsx_path, sheet_name=1, header=None, engine="openpyxl")
+except Exception:
+    try:
+        sheet2 = pd.read_excel(xlsx_path, sheet_name=1, header=None)
+    except Exception as e:
+        print("  Could not read Sheet2 (install openpyxl: pip install openpyxl):", e)
+        sys.exit(0)
+
+label_names = None
+if sheet2.shape[1] >= 60:
+    first_row = sheet2.iloc[0].astype(str).tolist()
+    if len(first_row) >= 60 and not first_row[0].isdigit():
+        label_names = first_row[:60]
+elif sheet2.shape[0] >= 60:
+    col0 = sheet2.iloc[:60, 0].astype(str).tolist()
+    if not col0[0].isdigit():
+        label_names = col0[:60]
+if label_names is None and sheet2.shape[1] >= 61:
+    header = sheet2.iloc[0].tolist()
+    if len(header) >= 61:
+        label_names = [str(h) for h in header[1:61]]
+
+if label_names is None:
+    print("  Could not infer 60 label names from Categories_names.xlsx; leaving CSV headers as-is.")
+    sys.exit(0)
+
+label_names = label_names[:60]
+if len(label_names) < 60:
+    label_names = label_names + [f"label_{i}" for i in range(len(label_names), 60)]
+
+csv_files = [f for f in os.listdir(labels_dir) if f.endswith(".csv")]
+updated = 0
+for fname in csv_files:
+    path = os.path.join(labels_dir, fname)
+    try:
+        df = pd.read_csv(path, nrows=1)
+    except Exception:
+        continue
+    cols = df.columns.tolist()
+    if len(cols) != 61:
+        continue
+    new_header = ["image"] + label_names
+    df_full = pd.read_csv(path)
+    df_full.columns = new_header
+    df_full.to_csv(path, index=False)
+    updated += 1
+
+if updated > 0:
+    print("  Updated headers in", updated, "CSV(s) with actual label names.")
+PYTHON_SCRIPT
+fi
+
 # --- 8. FINAL VERIFICATION ---
 echo ""
 echo "=== Extraction Complete ==="
@@ -188,6 +268,9 @@ fi
 if [ -d "$full_path/labels" ]; then
     label_count=$(ls "$full_path/labels"/*.csv 2>/dev/null | wc -l)
     echo "- Found $label_count CSV label files in labels/"
+    if [ -f "$full_path/Categories_names.xlsx" ]; then
+        echo "  (Categories_names.xlsx present; CSV headers updated with actual label names for visualization)"
+    fi
 fi
 
 echo ""

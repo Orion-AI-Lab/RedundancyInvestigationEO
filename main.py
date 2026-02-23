@@ -3,10 +3,12 @@ import os
 import pprint
 import random
 
-# Set environment variables early to work around cuDNN compatibility issues
+# Set environment variables early (before torch import)
 os.environ['TORCH_CUDNN_V8_API_ENABLED'] = '0'
 os.environ['CUDNN_LOGINFO_DBG'] = '0'
 os.environ['CUDNN_LOGERR_DBG'] = '0'
+# CuBLAS deterministic backend (required for torch.bmm, matmul reproducibility on CUDA)
+os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':4096:8'
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -16,15 +18,16 @@ import utilities
 import utilities.utils as utils
 import argparse
 
-# Enable TensorFloat32 (TF32) for better performance on Ampere+ GPUs
-torch.set_float32_matmul_precision('high')
-
+# TF32: disabled during training for reproducibility (non-deterministic on Ampere+).
+# Set in __main__ after configs are loaded.
 import torch.multiprocessing
 torch.multiprocessing.set_sharing_strategy('file_system')
 
 
-def seed_everything(seed):
-    """Set all relevant RNG seeds and cuDNN for reproducible runs."""
+def seed_everything(seed, strict_deterministic=False):
+    """Set all relevant RNG seeds. If strict_deterministic=True (MARIDA only), also enable
+    cudnn.deterministic and torch.use_deterministic_algorithms; otherwise skip those to avoid
+    torchmetrics device issues (e.g. AveragePrecision cumsum) on other datasets."""
     print("Setting seed to {}".format(seed))
     random.seed(seed)
     np.random.seed(seed)
@@ -32,9 +35,18 @@ def seed_everything(seed):
     if torch.cuda.is_available():
         torch.cuda.manual_seed(seed)
         torch.cuda.manual_seed_all(seed)
-    # Reproducible cuDNN: same algorithm choices and deterministic ops (may be slightly slower)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
+    if strict_deterministic:
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+        torch.backends.cuda.enable_flash_sdp(False)
+        torch.backends.cuda.enable_mem_efficient_sdp(False)
+        torch.use_deterministic_algorithms(True, warn_only=True)
+        print("Strict deterministic mode enabled (MARIDA reproducibility).")
+    else:
+        torch.backends.cudnn.benchmark = True  # faster for non-MARIDA
+
+import warnings
+warnings.filterwarnings("ignore", message=".*does not have a deterministic implementation.*")
 
 
 def store_experiment_id(configs):
@@ -115,13 +127,14 @@ if __name__ == "__main__":
     #pprint.pprint(configs)
     if args.seed is not None:
         configs["seed"] = args.seed
-    seed_everything(configs["seed"])
+    strict_det = configs.get("strict_deterministic", False)
+    seed_everything(configs["seed"], strict_deterministic=strict_det)
 
-    # For test phase: optional deterministic inference so same checkpoint + same test set => same metrics
-    if configs.get("phase") == "test" and configs.get("deterministic_test", True):
-        torch.set_float32_matmul_precision("highest")  # Disable TF32 (non-deterministic on Ampere+)
-        configs["mixed_precision"] = False  # Disable autocast during test (float16 ops can be non-deterministic)
-        print("Deterministic test: TF32 disabled, mixed_precision disabled for reproducible evaluation.")
+    if strict_det:
+        torch.set_float32_matmul_precision("highest")
+        print("strict_deterministic=True: TF32 disabled for reproducibility.")
+    else:
+        torch.set_float32_matmul_precision("high")
 
     # Setup wandb
     if configs["wandb"] and not configs["distributed"]:

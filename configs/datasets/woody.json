@@ -4,7 +4,9 @@
     "metrics": [
         "accuracy",
         "fscore",
-        "iou"
+        "iou",
+        "precision",
+        "recall"
     ], //Desired metrics to log
     "num_classes":4,
     "in_channels":3,

@@ -6,8 +6,44 @@ import torch
 import torch.nn.functional as F
 import math
 import numpy as np
-import matplotlib.pyplot as plt 
+import matplotlib.pyplot as plt
 import wandb
+
+
+def _deterministic_adaptive_avg_pool2d(x: torch.Tensor, output_size) -> torch.Tensor:
+    """
+    Deterministic replacement for F.adaptive_avg_pool2d.
+    Uses AvgPool2d (deterministic backward) or mean instead of AdaptiveAvgPool2d
+    (non-deterministic backward per PyTorch issue #49314).
+    """
+    oh, ow = (output_size, output_size) if isinstance(output_size, int) else output_size
+    _, _, H, W = x.shape
+    if oh == 1 and ow == 1:
+        return x.mean(dim=(2, 3), keepdim=True)
+    if H % oh == 0 and W % ow == 0:
+        stride_h, stride_w = H // oh, W // ow
+        kernel_h = H - (oh - 1) * stride_h
+        kernel_w = W - (ow - 1) * stride_w
+        return F.avg_pool2d(x, kernel_size=(kernel_h, kernel_w), stride=(stride_h, stride_w))
+    stride_h = max(1, (H - 1) // oh + 1) if oh > 1 else H
+    stride_w = max(1, (W - 1) // ow + 1) if ow > 1 else W
+    kernel_h = H - (oh - 1) * stride_h if oh > 1 else H
+    kernel_w = W - (ow - 1) * stride_w if ow > 1 else W
+    kernel_h, kernel_w = max(1, kernel_h), max(1, kernel_w)
+    return F.avg_pool2d(x, kernel_size=(kernel_h, kernel_w), stride=(stride_h, stride_w))
+
+
+class DeterministicAdaptiveAvgPool2d(nn.Module):
+    """Deterministic replacement for nn.AdaptiveAvgPool2d (non-deterministic backward)."""
+
+    def __init__(self, output_size):
+        super().__init__()
+        self.output_size = output_size
+
+    def forward(self, x):
+        return _deterministic_adaptive_avg_pool2d(x, self.output_size)
+
+
 from segmentation_models_pytorch.base import (
     ClassificationHead,
     SegmentationHead,
@@ -17,6 +53,7 @@ from segmentation_models_pytorch.base import (
 model_channels = {
     "vit_large_patch16_224": [1024, 768, 384, 192],
     "vit_base_patch16_224": [768, 512, 256, 128],
+    "vit_base_patch32_224": [768, 512, 256, 128],  # same embed_dim as vit_base_patch16_224
     "vit_base_patch8_224": [768, 512, 256, 128],  # same embed_dim as vit_base_patch16_224
     "vit_small_patch16_224": [384, 256, 128, 64],
     "vit_tiny_patch16_224": [192, 128, 64, 32],
@@ -46,6 +83,7 @@ class PSPModule(nn.Module):
             [
                 nn.Sequential(
                     nn.AdaptiveAvgPool2d(size),
+                    #DeterministicAdaptiveAvgPool2d(size),
                     md.Conv2dReLU(
                         in_channels,
                         in_channels // len(sizes),
@@ -211,13 +249,15 @@ class RViTUPerNet(nn.Module):
         feature_size = encoder.model.patch_embed.proj.out_channels
         num_tokens = encoder.model.patch_embed.num_patches
         self.height = height
-        shapes =[closest_divisible_by_2(height), closest_divisible_by_2(height//2),closest_divisible_by_2(height//4), closest_divisible_by_2(height//8) ]#height//4, height//8]
+        shapes = [closest_divisible_by_2(height), closest_divisible_by_2(height//2), closest_divisible_by_2(height//4), closest_divisible_by_2(height//8)]
+        # Ensure each pyramid level has at least 1x1 to avoid division by zero and invalid interpolate (e.g. enforce_resize=64)
+        shapes = [max(1, s) for s in shapes]
         self.shapes = shapes
 
         reshaped_features = []
         #Calculate reshaped features
         for i in range(4):
-            resized_tokens = shapes[i]*shapes[i]
+            resized_tokens = shapes[i] * shapes[i]
             reshaped_features.append(int((num_tokens/resized_tokens)*feature_size))
         self.reshaped_features = reshaped_features  # for token-grid normalization (e.g. DINOv2 37x37 -> 36x36)
         
@@ -283,6 +323,26 @@ class RViTUPerNet(nn.Module):
                 #"Retained Patches": patch_mask.sum() / total_patches
             })
 
+    def _build_scatter_source_for_mask(self, features_stage, mask):
+        """Build scatter-friendly source for masked_scatter when encoder uses retention (topx% or max_len).
+        
+        masked_scatter iterates over mask True positions in row-major (batch-first) order and assigns
+        sequential elements from source. With max_len, features_stage is [B, max_len, C] but valid tokens
+        per batch vary (lens[b] = mask[b].sum()). Flattening features_stage naively would interleave
+        padding from batch 0 into batch 1's tokens, corrupting the scatter and collapsing performance.
+        
+        This builds source as [sum(lens), C] with tokens in correct order: batch 0's lens[0] tokens,
+        then batch 1's lens[1] tokens, etc. Works for both topx% (fixed k) and max_len (variable lens).
+        """
+        B, seq_len, C = features_stage.shape
+        lens = mask.sum(dim=1)  # [B] number of retained tokens per batch
+        total_retained = lens.sum().item()
+        
+        scatter_parts = []
+        for b in range(B):
+            scatter_parts.append(features_stage[b, :lens[b], :])  # [lens[b], C]
+        return torch.cat(scatter_parts, dim=0)  # [total_retained, C]
+
     def _normalize_token_grid_to_expected(self, first_stage_tokens):
         """When encoder token count != height^2 (e.g. DINOv2 37x37=1369 vs expected 36x36=1296),
         interpolate to expected grid and build 4 decoder stages from the single normalized map."""
@@ -337,12 +397,14 @@ class RViTUPerNet(nn.Module):
                 # Training mode: restore full spatial layout using mask
                 # All hierarchical stages have the same token count (no downsampling in blocks)
                 # So we restore all stages to the original token count using mask.shape[1]
-                decoder_tokens = torch.zeros((features[f].shape[0], mask.shape[1], features[f].shape[2]), device=features[f].device)
-                decoder_tokens = decoder_tokens.masked_scatter(mask.unsqueeze(-1), features[f])
+                decoder_tokens = torch.zeros((features[f].shape[0], mask.shape[1], features[f].shape[2]), device=features[f].device, dtype=features[f].dtype)
+                scatter_source = self._build_scatter_source_for_mask(features[f], mask)
+                decoder_tokens = decoder_tokens.masked_scatter(mask.unsqueeze(-1), scatter_source)
             elif is_masked_inference:
                 # Inference with masking: restore full spatial layout same as training
-                decoder_tokens = torch.zeros((features[f].shape[0], mask.shape[1], features[f].shape[2]), device=features[f].device)
-                decoder_tokens = decoder_tokens.masked_scatter(mask.unsqueeze(-1), features[f])
+                decoder_tokens = torch.zeros((features[f].shape[0], mask.shape[1], features[f].shape[2]), device=features[f].device, dtype=features[f].dtype)
+                scatter_source = self._build_scatter_source_for_mask(features[f], mask)
+                decoder_tokens = decoder_tokens.masked_scatter(mask.unsqueeze(-1), scatter_source)
             else:
                 # Standard inference without masking: use features directly
                 decoder_tokens = features[f]

@@ -9,20 +9,6 @@ import wandb
 import hashlib
 import numpy as np
 
-# Import torch._dynamo for skipping compilation on functions that use Python strings
-try:
-    import torch._dynamo as dynamo
-    skip = dynamo.skip
-    # Mark dynamic for parameters that change but shouldn't cause recompilation
-    try:
-        mark_dynamic = dynamo.mark_dynamic
-    except AttributeError:
-        mark_dynamic = None
-except (ImportError, AttributeError):
-    # Fallback if torch._dynamo is not available
-    def skip(fn):
-        return fn
-    mark_dynamic = None
 
 class RViT(nn.Module):
     def __init__(self, num_classes, backbone, image_size, num_channels, pretrained=True,
@@ -65,7 +51,7 @@ class RViT(nn.Module):
         else:
             from model_zoo import MaskAttentionViT as MaskAttentionViT
 
-            if self.implementation in ["median", "topx%", "vit", "random_topx%", "different_random_topx%"]:
+            if self.implementation in ["topx%", "vit", "random_topx%", "different_random_topx%"]:
                 raise ValueError("Invalid arguments. "
                                 "Change the attention_mask to False or the implementation to max_len")
 
@@ -89,40 +75,14 @@ class RViT(nn.Module):
             if not self.attention_mask:
                 raise ValueError("MaskAttentionViT requires attention_mask=True")
               
-        if self.implementation not in ["median", "max_len", "topx%", "vit", "random_topx%", "different_random_topx%"]:
+        if self.implementation not in ["max_len", "topx%", "vit", "random_topx%", "different_random_topx%"]:
             raise ValueError("Invalid or missing `implementation`. "
-                                "Choose from: [median, max_len, topx%, vit, random_topx%, different_random_topx%]")
+                                "Choose from: [max_len, topx%, vit, random_topx%, different_random_topx%]")
         
         if (self.implementation == "topx%" or self.implementation == "random_topx%" or self.implementation == "different_random_topx%") and (self.retain_percent <= 0 or self.retain_percent > 100):
             raise ValueError("Value of retain_percent must be greater than 0 and less than or equal to 100 for topx% implementation.")
         
 
-
-    def calc_mask(self, x,verbose=False):
-        #Mask similar tokens
-        out = x[:,1:].mean(dim=0)
-
-        #Calculate cosine similarity between all pairs of tokens
-        norms_torch = torch.norm(out, dim=1, keepdim=True)
-        normalized_tensor_torch = out / norms_torch
-        cos_sim = torch.mm(normalized_tensor_torch, normalized_tensor_torch.T)
-        keep_mask = torch.ones(cos_sim.shape[0], dtype=torch.bool)
-        # Iterate over each pair of tokens
-        for i in range(cos_sim.shape[0]):
-            for j in range(i + 1, cos_sim.shape[1]):
-                if i != j:
-                    if cos_sim[i, j] > self.mask_threshold:
-                        # If both tokens are similar, mark one for removal (let's keep the first one)
-                        keep_mask[j] = False
-        keep_mask =  torch.cat((torch.tensor([True]),keep_mask))
-        x = x[:,keep_mask] 
-        if verbose:
-            print("Masked: ", keep_mask.sum())
-            print("Masked ratio: ",(keep_mask.sum()-1)/keep_mask.shape[0])
-            print(x.shape)
-        if wandb.run:
-            wandb.log({"mask_ratio":(keep_mask.sum()-1)/keep_mask.shape[0]})
-        return x
 
     def batch_cos_similarity(self, x):
         """
@@ -140,27 +100,6 @@ class RViT(nn.Module):
         cos_sim = torch.bmm(normalized_tensor_torch, normalized_tensor_torch.transpose(1, 2))
         return cos_sim
     
-    def get_mask(self, cos_sim):
-        """ 
-        Get the mask of tokens to keep based on the cosine similarity between them.
-        Args:
-            cos_sim: A tensor of shape (batch,num_tokens, num_tokens) containing the cosine similarity
-            between all pairs of tokens in a single sample.
-        Returns:
-            A tensor of shape (batch,num_tokens) containing a boolean mask indicating which tokens to keep per sample.
-        """
-        
-        keep_mask = torch.ones(cos_sim.shape[0],cos_sim.shape[1]+1, dtype=torch.bool,device=cos_sim.device)
-        # Iterate over each pair of tokens for the batch vectorised
-        for b in range(cos_sim.shape[0]):
-            for i in range(cos_sim.shape[1]):
-                for j in range(i + 1, cos_sim.shape[2]):
-                    if i != j:
-                        if cos_sim[b,i, j] > self.mask_threshold:
-                            # If both tokens are similar, mark one for removal (let's keep the first one)
-                            keep_mask[b,j+1] = False
-                            
-        return keep_mask
     
     
     def get_mask_vectorised(self, cos_sim):
@@ -206,13 +145,10 @@ class RViT(nn.Module):
         #Keep mask per row sum
         retained_tokens = [x[i, keep_mask[i]] for i in range(x.shape[0])]
 
-        #Get median length
-        #median_len = torch.median(torch.tensor([tokens.shape[0] for tokens in retained_tokens]))
-
         # Count the number of tokens retained for each sample
         retained_counts = keep_mask.sum(dim=1).tolist()
         
-        # Get max length (instead of median)
+        # Get max length
         max_len = max(tokens.shape[0] for tokens in retained_tokens)
         max_len = min(max_len, total_patches)
         #Calc topk indices
@@ -273,310 +209,13 @@ class RViT(nn.Module):
         if use_mask:
             x = self.calc_mask_vectorised(x,False)
 
-        #TODO Mask per sample and pad to max length (?)
+        
+
         x = self.model.norm_pre(x)
         x = self.model.blocks(x)
         x = self.model.norm(x)
         return x
-    
 
-    def get_topk_indices_mean_similarity(self,cos_sim,k):
-        """ From a cosine similarity matrix, get the top k indices indicating the most informative tokens for each sample.
-
-        Args:
-            cos_sim: A tensor of shape (batch,num_tokens, num_tokens) containing the cosine similarity
-            k: The number of tokens to keep.
-        Returns:
-            A tensor of shape (batch,k) containing the indices of the top k tokens for each sample.
-        """
-        cos_sim = torch.abs(cos_sim)
-        mask = ~torch.eye(cos_sim.shape[1], dtype=torch.bool, device=cos_sim.device)
-        masked_similarities = cos_sim * mask.unsqueeze(0)
-        mean_similarities = masked_similarities.sum(dim=2) / (cos_sim.shape[1] - 1)
-        tok_k_indices = torch.topk(-mean_similarities, k, dim=1).indices
-        # Sort indices to ensure consistent ordering across different selection approaches
-        tok_k_indices, _ = torch.sort(tok_k_indices, dim=1)
-        return tok_k_indices
-
-    def get_topk_indices_redundancy_based_min(self,cos_sim, k):
-        """Keep one patch from each high-similarity pair, without duplicates.
-        Fully vectorized across batch. Returns tensor shape [batch, k] with original patch indices.
-        """
-        device = cos_sim.device
-        batch_size = cos_sim.shape[0]
-        num_patches = cos_sim.shape[1]
-        eps = 1e-7
-
-        cos_sim = torch.abs(cos_sim) + eps  # [B, n, n]
-
-        if k >= num_patches:
-            # Return all patches in order
-            return torch.arange(num_patches, device=device).unsqueeze(0).expand(batch_size, -1)
-
-        # keep only upper triangular (row < col)
-        mask = torch.triu(torch.ones((num_patches, num_patches), dtype=torch.bool, device=device), diagonal=1)
-        masked = cos_sim * mask.unsqueeze(0)  # [B, n, n]
-
-        # Replace zero/unmasked entries with -inf so they are never selected by max/topk
-        masked = masked.clone()
-        masked[masked == 0] = float('inf')
-
-        masked_flat = masked.view(batch_size, -1)  # [B, n*n]
-        result = torch.full((batch_size, k), -1, dtype=torch.long, device=device)
-
-        base = torch.arange(num_patches, device=device)  # [n]
-        batch_idx = torch.arange(batch_size, device=device)
-
-        for i in range(k):
-            # pick the highest similarity pair per batch
-            vals, idx = masked_flat.min(dim=1)  # [B], [B] (max avoids dealing with sign inversions)
-            # if all remaining entries are -inf, idx will be some index but vals == -inf -> break early
-            if torch.isneginf(vals).all():
-                # no more available pairs -> fill remaining slots with -1 or any sentinel
-                break
-
-            row = idx // num_patches       # [B]
-            col = idx % num_patches        # [B]
-
-            # Decide which patch to keep from the pair (here: keep the 'row' element)
-            chosen = row  # shape [B]
-            result[:, i] = chosen
-
-            # Now set to -inf all flattened entries that involve `chosen` patch
-            # 1) Pairs where chosen is the row (chosen as first element): chosen * n + j for j=0..n-1
-            rows_chosen = chosen.unsqueeze(1) * num_patches + base.unsqueeze(0)   # [B, n]
-            masked_flat[batch_idx.unsqueeze(1), rows_chosen] = float('inf')
-
-            # 2) Pairs where chosen is the column (chosen as second element): j * n + chosen for j=0..n-1
-            cols_chosen = base.unsqueeze(0) * num_patches + chosen.unsqueeze(1)   # [B, n]
-            masked_flat[batch_idx.unsqueeze(1), cols_chosen] = float('inf')
-            # (The selected pair itself is included in the above and is set to -inf too.)
-
-        return result
-
-
-    def get_topk_indices_redundancy_based(self, cos_sim, k):
-        """
-        Vectorized across batch: repeatedly find the pair with maximum cosine similarity
-        (upper-triangular pairs only), drop one element from that pair, do this
-        (num_patches - k) times, then return the indices of the k remaining patches.
-
-        Returns: Tensor of shape [batch, k] with original patch indices (ascending order).
-        If fewer than k remain (very unlikely), remaining slots are filled with -1.
-        """
-        device = cos_sim.device
-        batch_size = cos_sim.shape[0]
-        num_patches = cos_sim.shape[1]
-        #eps = 1e-7
-
-        # trivial cases
-        if k >= num_patches:
-            return torch.arange(num_patches, device=device).unsqueeze(0).expand(batch_size, -1).clone()
-
-        # absolute similarity so sign doesn't matter
-        sim = torch.abs(cos_sim) #+ eps  # [B, n, n]
-        # sim = ssim + eps  # [B, n, n]
-        # upper triangular mask (row < col)
-        tri_mask = torch.triu(torch.ones((num_patches, num_patches), dtype=torch.bool, device=device), diagonal=1)
-        # invalid entries should be -inf so max ignores them
-        sim = sim.clone()
-        sim[:, ~tri_mask] = float("-inf")  # set diagonal and lower-tri to -inf
-
-        # flattened view for efficient max across pairs
-        sim_flat = sim.view(batch_size, -1)  # [B, n*n]
-
-        # track dropped patches per batch
-        dropped = torch.zeros((batch_size, num_patches), dtype=torch.bool, device=device)
-
-        base = torch.arange(num_patches, device=device)  # [n]
-        drops = num_patches - k
-
-        for _ in range(drops):
-            vals, idx = sim_flat.max(dim=1)  # [B], [B]
-            valid = ~torch.isneginf(vals)    # batches that have a valid pair to drop from
-            if not valid.any():
-                break
-
-            # decode row/col from flat index
-            row = idx // num_patches   # [B]
-            col = idx % num_patches    # [B]
-
-            # For invalid batches avoid indexing issues: set their chosen drop to 0 (won't be used)
-            drop = col.clone()
-            drop[~valid] = 0  # safe sentinel for invalid batches
-
-            # mark dropped patches (vectorized)
-            # create batch indices for boolean indexing
-            vb = valid.nonzero(as_tuple=True)[0]
-            if vb.numel() > 0:
-                # mark as dropped for valid batches
-                dropped[vb, drop[vb]] = True
-
-                # set all flattened entries that involve the dropped patch to -inf (for those valid batches)
-                # pairs where dropped is row: drop * n + j  (for j=0..n-1)
-                rows_dropped = drop.unsqueeze(1) * num_patches + base.unsqueeze(0)   # [B, n]
-                # pairs where dropped is col: j * n + drop
-                cols_dropped = base.unsqueeze(0) * num_patches + drop.unsqueeze(1)   # [B, n]
-
-                # apply only to valid batches (vectorized)
-                sim_flat[vb.unsqueeze(1), rows_dropped[vb]] = float("-inf")
-                sim_flat[vb.unsqueeze(1), cols_dropped[vb]] = float("-inf")
-
-                # rebuild sim view and also ensure any pair involving any already-dropped patch is -inf
-                sim = sim_flat.view(batch_size, num_patches, num_patches)
-
-                # alive mask and pair-wise alive
-                alive = ~dropped                       # [B, n]
-                alive_i = alive.unsqueeze(2)           # [B, n, 1]
-                alive_j = alive.unsqueeze(1)           # [B, 1, n]
-                pair_alive = alive_i & alive_j & tri_mask.unsqueeze(0)  # [B, n, n]
-
-                sim[~pair_alive] = float("-inf")
-                sim_flat = sim.view(batch_size, -1)
-
-        # After all drops: keep patches where dropped == False -> alive
-        alive = ~dropped  # [B, n]
-
-        # We want the indices of alive patches (sorted ascending) per batch, up to k entries.
-        # Vectorized trick: create index matrix and set indices of dead patches to a sentinel (n)
-        idxs = torch.arange(num_patches, device=device).unsqueeze(0).expand(batch_size, -1).clone()  # [B, n]
-        idxs_masked = idxs.clone()
-        idxs_masked[~alive] = num_patches  # sentinel that sorts to the end
-
-        # sort along dim=1 and take first k (these are the alive indices in ascending order)
-        sorted_idxs = torch.sort(idxs_masked, dim=1)[0]  # [B, n]
-        topk_keep = sorted_idxs[:, :k]                  # [B, k]
-
-        # replace sentinel (num_patches) with -1 for padding if any
-        topk_keep[topk_keep == num_patches] = -1
-
-        return topk_keep
-
-
-    def get_topk_indices_drop_more_redundant(self, cos_sim, k):
-        """
-        Greedy drop strategy:
-        - cos_sim: [B, n, n] pairwise similarity (can be asymmetric but usually symmetric)
-        - k: number of patches to keep
-        Algorithm (vectorized across batch):
-        - work with abs(cos_sim)
-        - consider only upper-triangular pairs (row < col)
-        - repeat (n - k) times:
-            * find max-similarity pair (row, col) per batch
-            * compute per-patch mean similarity (over currently-alive patches)
-            * drop, for each batch, the patch from {row, col} that has the **higher** mean similarity
-                (i.e., more redundant)
-            * mask out all pairs that involve the dropped patch
-        - return indices of alive (not-dropped) patches per batch, sorted ascending, shape [B, k]
-            padded with -1 if fewer than k remain (shouldn't normally happen)
-        """
-        device = cos_sim.device
-        B = cos_sim.shape[0]
-        n = cos_sim.shape[1]
-
-        if k >= n:
-            return torch.arange(n, device=device).unsqueeze(0).expand(B, -1).clone()
-
-        # Work with absolute similarity so sign doesn't matter
-        sim = torch.abs(cos_sim).clone()  # [B, n, n]
-
-        # Upper triangular mask
-        tri_mask = torch.triu(torch.ones((n, n), dtype=torch.bool, device=device), diagonal=1)  # [n, n]
-        sim[:, ~tri_mask] = float("-inf")  # set diag and lower-tri to -inf so max ignores them
-
-        sim_flat = sim.view(B, -1)  # [B, n*n]
-
-        dropped = torch.zeros((B, n), dtype=torch.bool, device=device)  # dropped mask per batch
-
-        base = torch.arange(n, device=device)  # [n]
-        drops = n - k
-        batch_idx = torch.arange(B, device=device)
-
-        for _ in range(drops):
-            vals, idx = sim_flat.max(dim=1)  # [B], [B]
-            valid = ~torch.isneginf(vals)     # batches that still have a valid pair
-
-            if not valid.any():
-                break
-
-            # decode row/col of chosen max pair
-            row = idx // n
-            col = idx % n
-
-            # For invalid batches, set safe sentinel (we won't use them)
-            row[~valid] = 0
-            col[~valid] = 0
-
-            # compute mean similarity per patch using the current sim and alive mask.
-            # We want the mean over other alive patches (ignore -inf entries).
-            # Rebuild sim as [B,n,n] from sim_flat (it already has -inf for invalid pairs).
-            sim = sim_flat.view(B, n, n)
-
-            # alive mask (excluding already dropped patches)
-            alive = ~dropped  # [B, n]
-            alive_i = alive.unsqueeze(2)   # [B, n, 1]
-            alive_j = alive.unsqueeze(1)   # [B, 1, n]
-            pair_alive = alive_i & alive_j & tri_mask.unsqueeze(0)  # [B, n, n] only upper-tri alive pairs
-
-            # For mean similarity per patch we want to consider all alive partners (both sides).
-            # Build a symmetric view of pairwise alive similarities:
-            # We'll create a matrix M where M[b,i,j] is sim[b,i,j] if pair (i,j) is alive (upper-tri),
-            # and we mirror it to also give sim[b,j,i] = sim[b,i,j], so each patch's mean uses
-            # its alive connections.
-            # Extract upper-tri alive sim (with -inf for others)
-            upper_alive_sim = sim.clone()
-            upper_alive_sim[~pair_alive] = float("-inf")
-
-            # Mirror to get symmetric alive similarity matrix (diagonal remains -inf)
-            sym_alive_sim = upper_alive_sim + upper_alive_sim.transpose(1, 2)  # [B,n,n]
-            # Now for each patch i, the alive similarities to others are sym_alive_sim[b,i,:]
-            # Convert -inf to 0 for sum and count alive neighbors
-            mask_alive_neighbors = (sym_alive_sim != float("-inf"))
-            # sum and count
-            sum_sim = torch.where(mask_alive_neighbors, sym_alive_sim, torch.zeros_like(sym_alive_sim)).sum(dim=2)  # [B, n]
-            cnt_neighbors = mask_alive_neighbors.sum(dim=2).clamp(min=1)  # avoid div by zero, [B,n]
-            mean_sim = sum_sim / cnt_neighbors  # [B, n] mean similarity to alive neighbors (0 if no neighbors)
-
-            # Choose which to drop: between row and col, drop the patch with higher mean_sim (more redundant).
-            # For batches that are invalid (no valid pair), we ignore by keeping a sentinel later.
-            drop = torch.where(mean_sim[batch_idx, row] > mean_sim[batch_idx, col], row, col)
-            # Tie-breaking: if equal mean_sim, drop the higher-index patch to be deterministic
-            equal_mask = (mean_sim[batch_idx, row] == mean_sim[batch_idx, col]) & valid
-            if equal_mask.any():
-                drop[equal_mask] = torch.max(row[equal_mask], col[equal_mask])
-
-            # apply to only valid batches
-            vb = valid.nonzero(as_tuple=True)[0]
-            if vb.numel() == 0:
-                break
-
-            dropped[vb, drop[vb]] = True
-
-            # mask out all entries involving dropped patch (set to -inf in sim_flat)
-            # pairs where dropped is row: drop * n + j  (for j=0..n-1)
-            rows_dropped = drop.unsqueeze(1) * n + base.unsqueeze(0)   # [B, n]
-            # pairs where dropped is col: j * n + drop
-            cols_dropped = base.unsqueeze(0) * n + drop.unsqueeze(1)   # [B, n]
-
-            sim_flat[vb.unsqueeze(1), rows_dropped[vb]] = float("-inf")
-            sim_flat[vb.unsqueeze(1), cols_dropped[vb]] = float("-inf")
-
-            # rebuild sim_flat (already updated) and continue
-            # additionally ensure any pair involving an already-dropped patch is -inf
-            # (this will be enforced by pair_alive recomputation in next loop iteration)
-
-        # After drops: alive = ~dropped
-        alive = ~dropped  # [B, n]
-
-        # build indices and mask dead ones to sentinel n so they sort to the end
-        idxs = torch.arange(n, device=device).unsqueeze(0).expand(B, -1).clone()  # [B, n]
-        idxs_masked = idxs.clone()
-        idxs_masked[~alive] = n  # sentinel
-
-        sorted_idxs = torch.sort(idxs_masked, dim=1)[0]  # [B, n] ascending with sentinel at end
-        topk_keep = sorted_idxs[:, :k]                  # [B, k]
-        topk_keep[topk_keep == n] = -1
-        return topk_keep
     
     def fps_from_cosine_sim(self,cos_sim, k):
         """
@@ -650,11 +289,12 @@ class RViT(nn.Module):
 
 
     def get_different_random_topk_indices(self, cos_sim, k):
-        """ Selects k random token indices for each sample in the batch.
+        """Selects k random token indices per sample.
 
         Args:
             cos_sim: A tensor of shape (batch, num_tokens, num_tokens)
             k: The number of tokens to select randomly.
+            keys: iterable of unique strings/IDs for each sample (len == batch); used to seed RNG per sample.
         Returns:
             A tensor of shape (batch, k) containing k random indices for each sample.
         """
@@ -709,7 +349,7 @@ class RViT(nn.Module):
 
         return torch.stack(selected_indices, dim=0)  # (batch, k)
 
-    def _log_mask_visualization(self, raw_input, keep_mask, patch_size, num_patches_h, num_patches_w):
+    def log_mask_visualization(self, raw_input, keep_mask, patch_size, num_patches_h, num_patches_w):
         """
         Log a side-by-side visualization of raw vs masked image for the first sample.
         This is for debugging/inspection and does not affect the forward pass.
@@ -761,68 +401,6 @@ class RViT(nn.Module):
                 print(f"Mask visualization failed: {e}")
 
     
-        # def visualization_input(self, raw_input, raw_label, mask, hier_mask, patch_size, num_patches_w, total_patches):
-        # #Convert raw input to CPU numpy array
-        #     raw_img = raw_input[0].detach().cpu().numpy()  # take first sample
-        #     if raw_img.shape[0] > 3:
-        #         raw_img = raw_img[:3, :, :]
-        #     raw_img = (raw_img - raw_img.min()) / (raw_img.max() - raw_img.min() + 1e-8)
-        #     raw_img = raw_img.transpose(1, 2, 0)
-
-        #     # Create masked image with patches in original positions
-        #     masked_img = np.zeros_like(raw_img)
-        #     masked_label = np.zeros_like(raw_label)
-        #     patch_label_mask = hier_mask[0].cpu().numpy()  # Use first sample's mask
-        #     patch_mask = mask[0].cpu().numpy()  # Use first sample's mask
-
-        #     for idx in range(total_patches):
-        #         h_idx = idx // num_patches_w
-        #         w_idx = idx % num_patches_w
-                
-        #         h_start = h_idx * patch_size
-        #         h_end = (h_idx + 1) * patch_size
-        #         w_start = w_idx * patch_size
-        #         w_end = (w_idx + 1) * patch_size
-                
-        #         if patch_mask[idx]:
-        #             # Keep original patch
-        #             masked_img[h_start:h_end, w_start:w_end] = raw_img[h_start:h_end, w_start:w_end]
-        #             masked_label[h_start:h_end, w_start:w_end] = raw_label[h_start:h_end, w_start:w_end]
-        #         else:
-        #             # Black out masked patches
-        #             masked_img[h_start:h_end, w_start:w_end] = 0.0  # Use black for masked patches
-        #             masked_label[h_start:h_end, w_start:w_end] = -1.0  # Use black for masked patches
-                            
-        #     # Plot side by side
-        #     #fig, axes = plt.subplots(1, 3, figsize=(12, 6))
-        #     fig, axes = plt.subplots(1, 4, figsize=(16, 6))
-        #     axes[0].imshow(raw_img)
-        #     axes[0].set_title("Raw Input")
-        #     axes[0].axis("off")
-            
-        #     axes[1].imshow(masked_img)
-        #     axes[1].set_title(f"Masked Image ({self.implementation})")
-        #     axes[1].axis("off")
-            
-        #     if self.hierarchical_features:
-        #         axes[2].imshow(raw_label)
-        #         axes[2].set_title(f"Raw Label ({self.implementation})")
-        #         axes[2].axis("off")
-
-        #         axes[3].imshow(masked_label)
-        #         axes[3].set_title(f"Masked Label ({self.implementation})")
-        #         axes[3].axis("off")
-
-        #         plt.tight_layout()
-        #     #plt.savefig(f"masked_vs_raw_{self.implementation}.png", dpi=300)
-        #     plt.close()
-
-        #     if wandb.run:
-        #         wandb.log({
-        #             "Raw vs Masked vs Raw Label vs Masked Label": wandb.Image(fig),
-        #             #"Retained Patches": patch_mask.sum() / total_patches
-        #         })
-    
     def forward_mask_in_image_space(self, x, keys=None, label=None,verbose=False):
         """
         Mask patches based on cosine similarity and retain the most important ones.
@@ -854,16 +432,11 @@ class RViT(nn.Module):
             # Extract patches
             patches = einops.rearrange(x, "b c (h p1) (w p2) -> b (h w) (p1 p2 c)", p1=patch_size, p2=patch_size)
             
-            #SSIM similarity
-            # if patches is (B, P, patch_flat), convert to (B, P, C, ph, pw)
-            B, P, flat = patches.shape
-            C = x.shape[1]    # original image channels before rearrange (make sure you have it)
-            ph, pw = patch_size, patch_size
-            patches_img = patches.view(B, P, C, ph, pw)   # adjust if dimension order differs
-            #ssim = self.batch_pairwise_ssim(patches_img, ph, pw)   # returns (B,P,P) in [0,1]
+            
             # Compute cosine similarity
             #cos_sim = self.batch_cos_similarity(patches)
             cos_sim = torch.abs(self.batch_cos_similarity(patches))
+            
             # Get binary mask (True = keep, False = mask)
             keep_mask = self.get_mask_vectorised(cos_sim)
             #keep_mask = self.get_mask_vectorised(ssim)
@@ -898,11 +471,12 @@ class RViT(nn.Module):
 
 
         final_mask = torch.zeros(x.shape[0], total_patches, dtype=torch.bool, device=x.device)
+        token_attention_mask = None  # Set only in max_len; used so padding is not attended (train and eval)
 
        # if self.training:
             #final_mask = mask.clone()
 
-        #3 Options: 1st-topx%, 2nd-median, 3rd-max_len
+        #3 Options: 1st-topx%, 2nd-different_random_topx%, 3rd-random_topx%, 4th-max_len
         if self.implementation == "topx%":
          
             if use_mask and self.retain_percent <= 100:
@@ -958,8 +532,8 @@ class RViT(nn.Module):
 
                     if wandb.run:
                         wandb.log({"unmasked_patches_ratio": k / total_patches})
-        elif self.implementation == "different_random_topx%":
 
+        elif self.implementation == "different_random_topx%":
             if use_mask and self.retain_percent <= 100:
                 # Get random top-k indices
                 # If keys are None (e.g., in test phase), generate deterministic keys from batch indices
@@ -971,7 +545,7 @@ class RViT(nn.Module):
                     else:
                         raise ValueError("keys must be provided for 'different_random_topx%' implementation in training")
                 
-                keep_indices = self.get_different_random_topk_indices(cos_sim, int(cos_sim.shape[1] * (self.retain_percent / 100)), keys)
+                keep_indices = self.get_different_random_topk_indices(cos_sim, int(cos_sim.shape[1] * (self.retain_percent / 100)))
                 # Sort so sequence is in spatial order; otherwise decoder gets scrambled layout and IoU drops
                 keep_indices, _ = torch.sort(keep_indices, dim=1)
                 # Ensure we select the same number of patches across all samples
@@ -1064,39 +638,6 @@ class RViT(nn.Module):
                 if wandb.run:
                     wandb.log({"unmasked_patches_ratio":  mean_len / total_patches})
 
-
-        elif self.implementation == "median":
-            if use_mask and self.mask_threshold <= 1.0:
-
-                keep_mask = keep_mask[:, :total_patches]  # Ensure matching shape     
-                #Mask based on similarity
-                retained_tokens = [x[i, keep_mask[i]] for i in range(x.shape[0])]
-                
-                #Get median length
-                lengths = torch.tensor([tokens.shape[0] for tokens in retained_tokens], device=x.device)
-                median_len = int(torch.median(lengths).item())
-                
-                #Calc topk indices
-                topk_indices = self.get_topk_indices_redundancy_based(cos_sim,median_len)
-                #topk_indices = self.get_topk_indices_mean_similarity(cos_sim,median_len)
-                # Sort indices to ensure consistent ordering
-                topk_indices, _ = torch.sort(topk_indices, dim=1)
-                batch_indices = torch.arange(x.shape[0], device=x.device)[:, None]
-                
-                x = x[batch_indices,topk_indices]
-                hierarchical_mask = torch.zeros_like(keep_mask, dtype=torch.bool,device=x.device)
-                batch_indices = torch.arange(topk_indices.size(0), device=keep_mask.device).unsqueeze(-1)
-
-                # Set the top indices to True
-                hierarchical_mask[batch_indices, topk_indices] = True
-                final_mask[batch_indices, topk_indices] = True   
-                
-                if verbose:
-                    print(f"Cos sim shape: {cos_sim.shape}, Mask shape: {keep_mask.shape}, Unmasked shape: {x.shape}, Median length: {median_len}")
-
-                if wandb.run:
-                    wandb.log({"unmasked_patches_ratio": median_len / total_patches})
-
             
         else: #vit
                 if wandb.run:
@@ -1116,7 +657,7 @@ class RViT(nn.Module):
 
         # after all branches where final_mask is filled
         if use_mask and self.mask_threshold <= 1.0 and self.retain_percent <= 100 and wandb.run:
-                self._log_mask_visualization(raw_input, final_mask, patch_size, num_patches_h, num_patches_w)
+                self.log_mask_visualization(raw_input, final_mask, patch_size, num_patches_h, num_patches_w)
 
         # Forward through the model
         x = self.model.norm_pre(x)
@@ -1131,7 +672,7 @@ class RViT(nn.Module):
         """
 
         
-        if self.training and self.attention_mask:
+        if token_attention_mask is not None:
             token_attention_mask = token_attention_mask[:, None, None, :]  # Shape it for attention layers
             if not self.hierarchical_features:
                 for module in self.model.blocks:
@@ -1193,6 +734,9 @@ class RViT(nn.Module):
     
     #SEGMENTATION
     def forward(self, x, keys=None, label=None):
+        # FinetunerClassification passes (image, spectral_keys); use image tensor only for masking/backbone.
+        if isinstance(x, (tuple, list)):
+            x = x[0]
         # Lightweight debug print to confirm RViT is used in test phase
         if getattr(self, "testing", False) and not hasattr(self, "_debug_printed_forward"):
             print(f"[DEBUG] RViT forward in testing mode. "

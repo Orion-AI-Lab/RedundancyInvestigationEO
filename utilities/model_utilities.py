@@ -30,7 +30,7 @@ def initialize_rgb_pretrained_weights(model, backbone, image_size, num_classes, 
         num_channels: Total number of channels
         rgb_channel_indices: List of 3 indices for RGB channels [R, G, B]. 
                            Default is [0, 1, 2] (for reordered data).
-                           For BigEarthNet, use [4, 3, 2] (B04=Red, B03=Green, B02=Blue per modality index).
+                           For BigEarthNet, use [5, 4, 3] (B04=Red, B03=Green, B02=Blue; indices per modality order VV,VH,B01,B02,B03,B04,...).
                            For FLAIR, use [0, 1, 2] (aerial-r=Red, aerial-g=Green, aerial-b=Blue).
     
     Returns:
@@ -199,6 +199,7 @@ def load_segmentation_encoder_into_classifier(classifier_model, checkpoint_path,
     Classifier (RViT) expects "model.*". We map encoder.X -> X and load only matching keys.
     If the segmentation backbone was 3-channel (e.g. FLAIR RGB) and the classifier is multi-channel
     (e.g. BigEarthNet 14ch), we copy the 3-channel patch_embed.proj into the first 3 input channels.
+    Pos_embed is interpolated when resolution differs (e.g. FLAIR 512px -> BigEarthNet 128px).
     """
     if not checkpoint_path or not Path(checkpoint_path).is_file():
         raise FileNotFoundError(f"Segmentation checkpoint not found: {checkpoint_path}")
@@ -207,35 +208,199 @@ def load_segmentation_encoder_into_classifier(classifier_model, checkpoint_path,
         ckpt = ckpt["state_dict"]
     elif not isinstance(ckpt, dict):
         ckpt = getattr(ckpt, "state_dict", lambda: ckpt)()
+    # Support DDP-saved checkpoints: strip "module." so "module.encoder.*" -> "encoder.*"
+    ckpt = {k.replace("module.", "", 1) if k.startswith("module.") else k: v for k, v in ckpt.items()}
     model_sd = classifier_model.state_dict()
     prefix = "encoder."
     filtered = {}
     patch_embed_key = None
     patch_embed_val = None
+    # Find classifier's pos_embed key (timm may use model._pos_embed; state_dict can show model.pos_embed)
+    pos_embed_target_key = None
+    for pk in ["model.pos_embed", "model._pos_embed"]:
+        if pk in model_sd:
+            pos_embed_target_key = pk
+            break
+
     for k, v in ckpt.items():
         if not k.startswith(prefix):
             continue
         new_k = k[len(prefix) :]
         if new_k not in model_sd:
+            # Still handle pos_embed: checkpoint may have model._pos_embed, classifier may have model.pos_embed
+            if pos_embed_target_key and ("pos_embed" in new_k or "_pos_embed" in new_k) and v.dim() == 3:
+                target = model_sd[pos_embed_target_key]
+                if v.shape[2] == target.shape[2]:
+                    if v.shape[1] != target.shape[1]:
+                        num_extra = 1
+                        orig_np = v.shape[1] - num_extra
+                        new_np = target.shape[1] - num_extra
+                        resized = interpolate_pos_embed_2d(
+                            v.clone(), num_extra_tokens=num_extra,
+                            orig_num_patches=orig_np, new_num_patches=new_np, mode="bicubic"
+                        )
+                        orig_side = int(orig_np ** 0.5)
+                        print(f"  Resized pos_embed (2D bicubic): {v.shape[1]} -> {target.shape[1]} positions (checkpoint grid {orig_side}×{orig_side})")
+                        filtered[pos_embed_target_key] = resized
+                    else:
+                        filtered[pos_embed_target_key] = v.clone()
             continue
         target = model_sd[new_k]
         if v.shape == target.shape:
             filtered[new_k] = v
         elif new_k == "model.patch_embed.proj.weight" and v.dim() == 4:
-            # Segmentation: 3 ch (e.g. FLAIR), classifier: more ch (e.g. BigEarthNet 14)
-            if v.shape[0] == target.shape[0] and v.shape[2:] == target.shape[2:] and v.shape[1] == 3 and target.shape[1] >= 3:
+            # Segmentation: 3 or 5 ch (e.g. FLAIR RGB or RGB+NIR+DEM), classifier: more ch (e.g. BigEarthNet 14)
+            if v.shape[0] == target.shape[0] and v.shape[2:] == target.shape[2:] and v.shape[1] >= 3 and target.shape[1] >= 3:
                 patch_embed_key = new_k
-                patch_embed_val = v
+                patch_embed_val = v  # use first 3 channels (RGB) when copying into target
             # else skip
+        elif pos_embed_target_key and ("pos_embed" in new_k or "_pos_embed" in new_k) and v.dim() == 3 and target.dim() == 3:
+            # Interpolate if resolution differs
+            if v.shape[2] == target.shape[2] and v.shape[1] != target.shape[1]:
+                num_extra = 1
+                orig_np = v.shape[1] - num_extra
+                new_np = target.shape[1] - num_extra
+                resized = interpolate_pos_embed_2d(
+                    v.clone(), num_extra_tokens=num_extra,
+                    orig_num_patches=orig_np, new_num_patches=new_np, mode="bicubic"
+                )
+                orig_side = int(orig_np ** 0.5)
+                print(f"  Resized pos_embed (2D bicubic): {v.shape[1]} -> {target.shape[1]} positions (checkpoint grid {orig_side}×{orig_side})")
+                filtered[pos_embed_target_key] = resized
+            elif v.shape == target.shape:
+                filtered[new_k] = v
+                if pos_embed_target_key != new_k:
+                    filtered[pos_embed_target_key] = v.clone()
         # else skip (e.g. different num_classes head)
     if patch_embed_key and patch_embed_val is not None:
         target = model_sd[patch_embed_key].clone()
-        target[:, :3, :, :] = patch_embed_val
+        n_copy = min(3, patch_embed_val.shape[1], target.shape[1])
+        target[:, :n_copy, :, :] = patch_embed_val[:, :n_copy, :, :].clone()
         filtered[patch_embed_key] = target
-        print(f"  Transferred patch_embed.proj: FLAIR RGB (3 ch) -> first 3 channels of classifier ({target.shape[1]} ch)")
+        print(f"  Transferred patch_embed.proj: first {n_copy} ch from checkpoint -> first {n_copy} ch of classifier ({target.shape[1]} ch)")
     missing, unexpected = classifier_model.load_state_dict(filtered, strict=False)
     n_loaded = len(filtered)
     print(f"  Loaded {n_loaded} keys from segmentation checkpoint (encoder -> classifier backbone).")
+    if missing:
+        print(f"  Missing in checkpoint (kept random/init): {missing[:8]}{'...' if len(missing) > 8 else ''}")
+    if unexpected:
+        print(f"  Unexpected (ignored): {unexpected[:8]}{'...' if len(unexpected) > 8 else ''}")
+    return classifier_model
+
+
+def interpolate_pos_embed_2d(pos_embed, num_extra_tokens, orig_num_patches, new_num_patches, mode="bicubic"):
+    """
+    Resize positional embeddings using 2D interpolation on the patch grid.
+
+    The spatial part of pos_embed (excluding class token) is stored as a flat sequence
+    (1, num_patches, C) but corresponds to a 2D grid of patches (e.g. 7×7 or 16×16).
+    This function:
+      1. Splits off the class token(s).
+      2. Reshapes the spatial part to (1, orig_h, orig_w, C) then (1, C, orig_h, orig_w).
+      3. Runs 2D bicubic interpolation to (new_h, new_w), so each new position is a
+         blend of spatially nearby positions in the image (not arbitrary sequence neighbors).
+      4. Reshapes back to (1, new_num_patches, C) and concatenates the class token.
+
+    See docs/POS_EMBED_2D_INTERPOLATION.md for a longer explanation.
+    Uses kornia.geometry.transform.resize for 2D resizing (same library as rest of project;
+    supports bicubic and optional antialias for downscaling).
+    """
+    if orig_num_patches == new_num_patches:
+        return pos_embed
+    orig_h = int(orig_num_patches ** 0.5)
+    orig_w = orig_num_patches // orig_h
+    new_h = int(new_num_patches ** 0.5)
+    new_w = new_num_patches // new_h
+    if orig_h * orig_w != orig_num_patches or new_h * new_w != new_num_patches:
+        # Non-square grid: fallback to 1D interpolation along the sequence
+        perm = pos_embed.permute(0, 2, 1)
+        perm_interp = torch.nn.functional.interpolate(
+            perm, size=new_num_patches + num_extra_tokens, mode="linear", align_corners=False
+        )
+        return perm_interp.permute(0, 2, 1)
+    extra = pos_embed[:, :num_extra_tokens, :]
+    spatial = pos_embed[:, num_extra_tokens:, :]
+    # (1, N, C) -> (1, H, W, C) -> (1, C, H, W); last two dims are H, W for resize
+    spatial = spatial.reshape(1, orig_h, orig_w, -1).permute(0, 3, 1, 2)
+    spatial = kornia.geometry.transform.resize(
+        spatial, size=(new_h, new_w), interpolation=mode, align_corners=False
+    )
+    spatial = spatial.permute(0, 2, 3, 1).reshape(1, new_num_patches, -1)
+    return torch.cat([extra, spatial], dim=1)
+
+
+def load_classification_encoder_into_classifier(classifier_model, checkpoint_path, strict=False, source_rgb_indices=None):
+    """
+    Load encoder weights from a classification checkpoint (e.g. BigEarthNet-trained RViT) into
+    a classifier created for a different dataset (e.g. MLRSNet). Handles channel and resolution
+    adaptation so you can freeze the encoder and train only the head on the target dataset.
+
+    - If checkpoint has more input channels (e.g. 14) than target (e.g. 3), copies the first 3
+      (or source_rgb_indices) channels of patch_embed.proj into the target.
+    - If pos_embed shape differs (e.g. 120px vs 256px), interpolates positional embeddings.
+    """
+    if not checkpoint_path or not Path(checkpoint_path).is_file():
+        raise FileNotFoundError(f"Classification checkpoint not found: {checkpoint_path}")
+    ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    if isinstance(ckpt, dict) and "state_dict" in ckpt:
+        ckpt = ckpt["state_dict"]
+    elif not isinstance(ckpt, dict):
+        ckpt = getattr(ckpt, "state_dict", lambda: ckpt)()
+    # If loaded model was FinetunerClassification, state_dict has "model.*" and "head.*"; we only want encoder
+    model_sd = classifier_model.state_dict()
+    filtered = {}
+    patch_embed_key = "model.patch_embed.proj.weight"
+    pos_embed_key = None
+    for k in ["model.pos_embed", "model._pos_embed"]:
+        if k in ckpt and k in model_sd:
+            pos_embed_key = k
+            break
+    if pos_embed_key is None and "model.pos_embed" in ckpt:
+        pos_embed_key = "model.pos_embed"
+    if pos_embed_key is None:
+        for k in model_sd:
+            if "pos_embed" in k:
+                pos_embed_key = k
+                if pos_embed_key not in ckpt:
+                    pos_embed_key = None
+                break
+
+    for k, v in ckpt.items():
+        if k not in model_sd:
+            continue
+        target = model_sd[k]
+        if v.shape == target.shape:
+            filtered[k] = v
+        elif k == patch_embed_key and v.dim() == 4:
+            # Source has more (or same) in_channels; target has fewer (e.g. 3 for MLRSNet)
+            if v.shape[0] == target.shape[0] and v.shape[2:] == target.shape[2:] and v.shape[1] >= target.shape[1]:
+                if source_rgb_indices is not None:
+                    sel = source_rgb_indices[: target.shape[1]]
+                    filtered[k] = v[:, sel, :, :].clone()
+                else:
+                    filtered[k] = v[:, : target.shape[1], :, :].clone()
+                print(f"  Transferred patch_embed.proj: {v.shape[1]} ch -> {target.shape[1]} ch (first channels)")
+        elif pos_embed_key and k == pos_embed_key and v.dim() == 3 and target.dim() == 3:
+            if v.shape[2] == target.shape[2] and v.shape[1] != target.shape[1]:
+                # 2D bicubic interpolation on the patch grid (class token unchanged, spatial resized in 2D)
+                num_extra = 1
+                orig_np = v.shape[1] - num_extra
+                new_np = target.shape[1] - num_extra
+                filtered[k] = interpolate_pos_embed_2d(
+                    v.clone(), num_extra_tokens=num_extra,
+                    orig_num_patches=orig_np, new_num_patches=new_np, mode="bicubic"
+                )
+                # Infer source grid: 50 positions = 7×7 (image_size 112), 65 = 8×8 (128), etc.
+                orig_side = int(orig_np ** 0.5)
+                inferred_src_size = orig_side * 16 if orig_side * orig_side == orig_np else None
+                hint = f" (checkpoint grid {orig_side}×{orig_side}" + (f", ~{inferred_src_size}×{inferred_src_size} with patch_size 16" if inferred_src_size else "") + ")"
+                print(f"  Resized pos_embed (2D bicubic): {v.shape[1]} -> {target.shape[1]} positions{hint}")
+            elif v.shape == target.shape:
+                filtered[k] = v
+
+    missing, unexpected = classifier_model.load_state_dict(filtered, strict=False)
+    n_loaded = len(filtered)
+    print(f"  Loaded {n_loaded} encoder keys from classification checkpoint.")
     if missing:
         print(f"  Missing in checkpoint (kept random/init): {missing[:8]}{'...' if len(missing) > 8 else ''}")
     if unexpected:
@@ -252,10 +417,11 @@ def create_classifier(configs):
         model.fc = nn.Linear(2048, configs["num_classes"])
         print("Loaded ResNet* model")
         return model
+    img_size = configs.get("effective_image_size", configs["image_size"])
     if configs['backbone'].lower() == 'act_base':
         import model_zoo.ACTViT as ACTViT
         model = ACTViT.AgglomerativeClusteringVisionTransformer(
-                patch_size=8, embed_dim=768, depth=12, num_heads=12, mlp_ratio=4, img_size=configs['image_size'],in_chans=configs['in_channels'],num_classes=configs['num_classes'],
+                patch_size=8, embed_dim=768, depth=12, num_heads=12, mlp_ratio=4, img_size=img_size,in_chans=configs['in_channels'],num_classes=configs['num_classes'],
                 qkv_bias=True, norm_layer=partial(nn.LayerNorm, eps=1e-6), configs=configs)
     elif "rvit" in configs and configs["rvit"]:
         # Segmentation-to-classification transfer only when explicitly enabled in config (seg_to_class + checkpoint path)
@@ -265,7 +431,7 @@ def create_classifier(configs):
             model = RViT.RViT(
                 num_classes=configs['num_classes'],
                 backbone=configs['backbone'],
-                image_size=configs["image_size"],
+                image_size=img_size,
                 num_channels=configs["in_channels"],
                 pretrained=False,
                 mask_threshold=configs["mask_threshold"],
@@ -283,7 +449,7 @@ def create_classifier(configs):
             model = RViT.RViT(
                 num_classes=configs['num_classes'],
                 backbone=configs['backbone'],
-                image_size=configs["image_size"],
+                image_size=img_size,
                 num_channels=configs["in_channels"],
                 pretrained=configs['pretrained'],
                 mask_threshold=configs["mask_threshold"],
@@ -298,15 +464,15 @@ def create_classifier(configs):
                 # Determine RGB channel indices based on dataset
                 rgb_indices = None
                 if configs.get('dataset') == 'bigearthnet':
-                    # BigEarthNet modality index: B04=4 (Red), B03=3 (Green), B02=2 (Blue)
+                    # BigEarthNet modality index: B04=5 (Red), B03=4 (Green), B02=3 (Blue); order VV,VH,B01,B02,B03,B04,...
                     if configs.get('rgb_channels_reordered', False):
                         rgb_indices = [0, 1, 2]
                     else:
-                        rgb_indices = [4, 3, 2]
+                        rgb_indices = [5, 4, 3]
                 elif configs.get('dataset') == 'flair' or configs.get('dataset') == 'flair2':
                     rgb_indices = [0, 1, 2]
                 model = initialize_rgb_pretrained_weights(
-                    model, configs['backbone'], configs["image_size"],
+                    model, configs['backbone'], img_size,
                     configs['num_classes'], configs["in_channels"], rgb_channel_indices=rgb_indices
                 )
     else:
@@ -316,7 +482,7 @@ def create_classifier(configs):
             pretrained=configs["pretrained"],
             in_chans=configs["in_channels"],
             num_classes=configs["num_classes"],
-            img_size=configs["image_size"], dynamic_img_pad=True, dynamic_img_size=True,
+            img_size=img_size, dynamic_img_pad=True, dynamic_img_size=True,
             #patch_size=configs["patch_size"]
         )
         # Override timm's weight conversion if pretrained and multi-channel
@@ -324,17 +490,17 @@ def create_classifier(configs):
             # Determine RGB channel indices based on dataset
             rgb_indices = None
             if configs.get('dataset') == 'bigearthnet':
-                # BigEarthNet modality index: RGB at indices [4, 3, 2] (B04=Red, B03=Green, B02=Blue)
+                # BigEarthNet modality index: RGB at indices [5, 4, 3] (B04=Red, B03=Green, B02=Blue)
                 if configs.get('rgb_channels_reordered', False):
                     rgb_indices = [0, 1, 2]  # Reordered: RGB first
                 else:
-                    rgb_indices = [4, 3, 2]  # Modality index order: B04 (Red), B03 (Green), B02 (Blue)
+                    rgb_indices = [5, 4, 3]  # Modality order: VV,VH,B01,B02,B03,B04,... → B04,B03,B02
             elif configs.get('dataset') == 'flair' or configs.get('dataset') == 'flair2':
                 # FLAIR modality index: aerial-r=0 (Red), aerial-g=1 (Green), aerial-b=2 (Blue)
                 rgb_indices = [0, 1, 2]  # RGB at first 3 channels
             
             model = initialize_rgb_pretrained_weights(
-                model, configs['backbone'], configs["image_size"], 
+                model, configs['backbone'], img_size, 
                 configs['num_classes'], configs["in_channels"], rgb_channel_indices=rgb_indices
             )
         return model
@@ -342,6 +508,7 @@ def create_classifier(configs):
 
 
 def create_segmentor(configs):
+    img_size = configs.get("effective_image_size", configs["image_size"])
     if configs["architecture"].lower() == "unet":
         model = smp.Unet(
             encoder_name=configs["backbone"],  # choose encoder, e.g. mobilenet_v2 or efficientnet-b7
@@ -359,14 +526,14 @@ def create_segmentor(configs):
                 if configs.get('rgb_channels_reordered', False):
                     rgb_indices = [0, 1, 2]  # Reordered: RGB first
                 else:
-                    rgb_indices = [4, 3, 2]  # Modality index order: B04 (Red), B03 (Green), B02 (Blue)
+                    rgb_indices = [5, 4, 3]  # Modality order: VV,VH,B01,B02,B03,B04,... → B04,B03,B02
             elif configs.get('dataset') == 'flair' or configs.get('dataset') == 'flair2':
                 # FLAIR modality index: aerial-r=0 (Red), aerial-g=1 (Green), aerial-b=2 (Blue)
                 rgb_indices = [0, 1, 2]  # RGB at first 3 channels
             
             # Apply RGB initialization to the encoder (smp uses timm encoders)
             model.encoder = initialize_rgb_pretrained_weights(
-                model.encoder, configs['backbone'], configs["image_size"], 
+                model.encoder, configs['backbone'], img_size,
                 configs['num_classes'], configs["in_channels"], rgb_channel_indices=rgb_indices
             )
     elif configs["architecture"].lower() == "rvitupernet":
@@ -374,7 +541,7 @@ def create_segmentor(configs):
         backbone = RViT.RViT(
             num_classes=configs['num_classes'],
             backbone=configs['backbone'],
-            image_size=configs["image_size"],
+            image_size=img_size,
             num_channels=configs["in_channels"],
             pretrained=configs['pretrained'],
             mask_threshold=configs["mask_threshold"],
@@ -391,20 +558,26 @@ def create_segmentor(configs):
             # Determine RGB channel indices based on dataset
             rgb_indices = None
             if configs.get('dataset') == 'bigearthnet':
-                # BigEarthNet modality index: RGB at indices [4, 3, 2] (B04=Red, B03=Green, B02=Blue)
+                # BigEarthNet modality index: RGB at indices [5, 4, 3] (B04=Red, B03=Green, B02=Blue)
                 if configs.get('rgb_channels_reordered', False):
                     rgb_indices = [0, 1, 2]  # Reordered: RGB first
                 else:
-                    rgb_indices = [4, 3, 2]  # Modality index order: B04 (Red), B03 (Green), B02 (Blue)
+                    rgb_indices = [5, 4, 3]  # Modality order: VV,VH,B01,B02,B03,B04,... → B04,B03,B02
             elif configs.get('dataset') == 'flair' or configs.get('dataset') == 'flair2':
                 # FLAIR modality index: aerial-r=0 (Red), aerial-g=1 (Green), aerial-b=2 (Blue)
                 rgb_indices = [0, 1, 2]  # RGB at first 3 channels
-            
+            elif configs.get('dataset') == 'waititu':
+                # Waititu: first 3 bands are RGB; 4th is alpha or NIR — use RGB for pretrained, init 4th
+                rgb_indices = [0, 1, 2]
+            elif configs.get('dataset') == 'marida':
+                # MARIDA: 11 Sentinel-2 bands (ACOLITE Rayleigh); first 3 at 10m are B02, B03, B04 (Blue, Green, Red)
+                rgb_indices = [0, 1, 2]
+
             backbone = initialize_rgb_pretrained_weights(
-                backbone, configs['backbone'], configs["image_size"], 
+                backbone, configs['backbone'], img_size,
                 configs['num_classes'], configs["in_channels"], rgb_channel_indices=rgb_indices
             )
-        model = RViTUPerNet.RViTUPerNet(backbone,num_classes=configs['num_classes'],decoder_segmentation_channels=configs['decoder_segmentation_channels'],pyramid_channels=configs['pyramid_channels'],activation=None, output_size=(configs['image_size'],configs['image_size']))
+        model = RViTUPerNet.RViTUPerNet(backbone,num_classes=configs['num_classes'],decoder_segmentation_channels=configs['decoder_segmentation_channels'],pyramid_channels=configs['pyramid_channels'],activation=None, output_size=(img_size, img_size))
     elif configs["architecture"].lower() == "deeplab":
         model = smp.DeepLabV3Plus(
             encoder_name=configs["backbone"],  # choose encoder, e.g. mobilenet_v2 or efficientnet-b7
@@ -450,7 +623,7 @@ class FinetunerSegmentation(nn.Module):
         self.configs = configs
         self.model = encoder
         self.pool = pool
-        img_size = self.configs["image_size"]
+        img_size = self.configs.get("effective_image_size", self.configs["image_size"])
         
         if not self.pool:
             if configs["deconv_decoder"]:
@@ -477,14 +650,14 @@ class FinetunerSegmentation(nn.Module):
         else:
             self.head = nn.Linear(
                 encoder.mlp_head.in_features * (configs["in_channels"]),
-                configs["num_classes"] * configs["image_size"] * configs["image_size"],
+                configs["num_classes"] * img_size * img_size,
             )
         self.model.mlp_head = nn.Identity()
 
     def forward(self, x):
         x, keys = x
 
-        img_size = self.configs["image_size"]
+        img_size = self.configs.get("effective_image_size", self.configs["image_size"])
         GS = img_size // self.configs["finetuning_patch_size"]
         
         x = self.model((x, keys), pool=self.pool)
@@ -496,18 +669,35 @@ class FinetunerSegmentation(nn.Module):
         return x
 
 
+def get_encoder_head_in_features(encoder):
+    """Get in_features of the encoder's classifier head (RViT/timm uses model.head, MAE-style uses mlp_head)."""
+    if hasattr(encoder, "mlp_head") and encoder.mlp_head is not None:
+        return encoder.mlp_head.in_features
+    if hasattr(encoder, "model") and hasattr(encoder.model, "head") and encoder.model.head is not None:
+        return encoder.model.head.in_features
+    raise AttributeError(
+        f"Encoder {type(encoder).__name__} has no classifier head (expected mlp_head or model.head)."
+    )
+
+
 class FinetunerClassification(nn.Module):
     def __init__(self, encoder, configs=None, pool=True):
         super().__init__()
         self.configs = configs
         self.model = encoder
         self.pool = pool
-        self.head = nn.Linear(encoder.mlp_head.in_features, configs["num_classes"])
-        self.model.mlp_head = nn.Identity()
+        in_features = get_encoder_head_in_features(encoder)
+        self.head = nn.Linear(in_features, configs["num_classes"])
+        if hasattr(encoder, "mlp_head"):
+            self.model.mlp_head = nn.Identity()
+        elif hasattr(encoder, "model") and hasattr(encoder.model, "head"):
+            self.model.model.head = nn.Identity()
 
-    def forward(self, x):
+    def forward(self, x, **kwargs):
         x, keys = x
-        x = self.model((x, keys), pool=self.pool)
+        # RViT.forward(x, keys=None, label=None) does not take pool; drop it if present
+        kwargs = {k: v for k, v in kwargs.items() if k != "pool"}
+        x = self.model((x, keys), **kwargs)
         x = self.head(x)
         return x
 
@@ -517,6 +707,17 @@ def create_model(configs):
         configs.get("task"), configs.get("architecture"), configs.get("backbone"), configs.get("device")))
     # print(configs)  # full dump disabled; uncomment for debugging
     print("="*20)
+    # Model resolution (pos_embed size): use enforce_resize when set, else dataset image_size
+    effective_image_size = (
+        configs["enforce_resize"]
+        if configs.get("enforce_resize") is not None
+        else configs["image_size"]
+    )
+    configs["effective_image_size"] = effective_image_size
+    if configs.get("enforce_resize") is not None:
+        print("Model image_size (pos_embed): {} (from enforce_resize)".format(effective_image_size))
+    else:
+        print("Model image_size (pos_embed): {} (from dataset config)".format(effective_image_size))
     if "fully_finetune" not in configs:
         fully_finetune = False
     else:
@@ -570,12 +771,41 @@ def create_model(configs):
         #     print(f"  Unexpected keys (ignored): {unexpected_keys[:5]}..." if len(unexpected_keys) > 5 else f"  Unexpected keys: {unexpected_keys}")
     
     if configs["linear_evaluation"] or fully_finetune:
+        transfer_seg_ckpt = configs.get("segmentation_pretrained_checkpoint") or configs.get("transfer_from_segmentation_checkpoint")
+        use_segmentation_pretrained = (
+            configs["task"] == "classification"
+            and configs.get("seg_to_class", False)
+            and transfer_seg_ckpt is not None
+        )
+
         if configs["pretrained_model_path"] is not None:
             print("Loading checkpoint from: ", configs["pretrained_model_path"])
-            model = torch.load(configs["pretrained_model_path"], map_location="cpu")
+            # Classification: create model for *target* config (e.g. MLRSNet), load encoder from
+            # pretrained checkpoint (e.g. BigEarthNet) with channel/resolution adaptation, then freeze and wrap.
+            # Segmentation: load full model from checkpoint (existing behavior).
+            if configs["task"] == "classification":
+                model = create_classifier(configs=configs)
+                source_rgb_indices = configs.get("transfer_source_rgb_indices")
+                load_classification_encoder_into_classifier(
+                    model, configs["pretrained_model_path"], strict=False, source_rgb_indices=source_rgb_indices
+                )
+            elif configs["task"] == "segmentation":
+                model = torch.load(configs["pretrained_model_path"], map_location="cpu")
+            else:
+                print("Finetuning on ", configs["task"], " is not yet supported!")
+                exit(3)
+        elif use_segmentation_pretrained:
+            # Linear evaluation (or full finetune) on classification using encoder from segmentation (e.g. FLAIR).
+            # create_classifier with seg_to_class + segmentation_pretrained_checkpoint loads the encoder.
+            print("Loading encoder from segmentation checkpoint (e.g. FLAIR) for linear evaluation: ", transfer_seg_ckpt)
+            model = create_classifier(configs=configs)
+        else:
+            print("For linear evaluation or finetuning, set pretrained_model_path or (seg_to_class + segmentation_pretrained_checkpoint). Exiting!")
+            exit(2)
 
+        if configs["pretrained_model_path"] is not None or use_segmentation_pretrained:
             if configs["linear_evaluation"]:
-                print("Linear evaluation: Freezing all layers except the classification head.")
+                print("Linear evaluation: Freezing encoder; only the classification head will be trained.")
                 for param in model.parameters():
                     param.requires_grad = False
             elif fully_finetune:
@@ -583,22 +813,31 @@ def create_model(configs):
                 for param in model.parameters():
                     param.requires_grad = True
 
-            model.cls_token.requires_grad = True
+            if hasattr(model, "cls_token") and model.cls_token is not None:
+                model.cls_token.requires_grad = True
 
-            if configs["change_finetuning_resolution"] is not None:
+            if configs.get("change_finetuning_resolution") is not None:
                 patch_size = configs["finetuning_patch_size"]
                 num_patches = (configs["change_finetuning_resolution"] // patch_size) * (
                     configs["change_finetuning_resolution"] // patch_size
                 )
-                model.num_patches = num_patches
                 assert (
                     configs["change_finetuning_resolution"] % patch_size == 0
                 ), "Image dimensions must be divisible by the patch size."
-                model.pos_embedding = nn.Parameter(torch.randn(1, num_patches + 1, model.pos_embedding.shape[-1]))
-                print("New positional embeddings: ")
-                print(model.pos_embedding.shape)
+                if hasattr(model, "model") and hasattr(model.model, "pos_embed"):
+                    old_pe = model.model.pos_embed
+                    model.model.pos_embed = nn.Parameter(
+                        torch.randn(1, num_patches + 1, old_pe.shape[-1])
+                    )
+                    print("New positional embeddings: ", model.model.pos_embed.shape)
+                elif hasattr(model, "pos_embedding"):
+                    model.pos_embedding = nn.Parameter(
+                        torch.randn(1, num_patches + 1, model.pos_embedding.shape[-1])
+                    )
+                    if hasattr(model, "num_patches"):
+                        model.num_patches = num_patches
+                    print("New positional embeddings: ", model.pos_embedding.shape)
 
-            # Assume a transformer like model from MAE for now
             if configs["task"] == "classification":
                 model = FinetunerClassification(model, configs)
             elif configs["task"] == "segmentation":
@@ -606,10 +845,8 @@ def create_model(configs):
                 print("Finetuning FoMo-Net for Segmentation")
                 print("=" * 20)
                 model = FinetunerSegmentation(model, configs)
-            else:
-                print("Finetuning on ", configs["task"], " is not yet supported!")
 
-            if configs["resume_checkpoint_path"] is not None:
+            if configs.get("resume_checkpoint_path") is not None:
                 if 'full_ckpt' in configs and configs['full_ckpt']:
                     print("Resuming from FoMo checkpoint: ", configs["resume_checkpoint_path"])
                     # model = torch.load(configs["resume_checkpoint_path"], map_location="cpu")
@@ -619,10 +856,6 @@ def create_model(configs):
                     print("Resuming from FoMo checkpoint: ", configs["resume_checkpoint_path"])
                     # model = torch.load(configs["resume_checkpoint_path"], map_location="cpu")
                     model.load_state_dict(torch.load(configs["resume_checkpoint_path"], map_location="cpu"))
-
-        else:
-            print("Pretrained model path is None! Exiting!")
-            exit(2)
 
     return model
 

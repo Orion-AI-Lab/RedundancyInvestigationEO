@@ -362,9 +362,13 @@ def rgb_from_tensor(img_tensor, channel_indices=(0, 1, 2)):
     if x.shape[0] == 0:  # Handle empty images
         h, w = max(1, x.shape[-2] if x.dim() >= 2 else 1), max(1, x.shape[-1] if x.dim() >= 2 else 1)
         return np.zeros((h, w, 3), dtype=np.uint8)
-    # Select RGB channels (slice to avoid advanced indexing issues with sparse/certain backends)
-    nch = min(3, x.shape[0])
-    x = x[:nch]
+    # Select RGB channels by channel_indices [R, G, B], or first 3 if indices not valid
+    nch = x.shape[0]
+    if (len(channel_indices) == 3 and
+            all(0 <= i < nch for i in channel_indices)):
+        x = x[list(channel_indices)]
+    else:
+        x = x[:min(3, nch)]
     if x.shape[0] < 3:
         x = x.repeat(3, 1, 1)
     if x.dim() != 3:

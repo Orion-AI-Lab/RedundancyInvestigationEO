@@ -45,7 +45,35 @@ from timm.layers import PatchEmbed, Mlp, DropPath, AttentionPoolLatent, RmsNorm,
     trunc_normal_, lecun_normal_, resample_patch_embed, resample_abs_pos_embed, use_fused_attn, \
     get_act_layer, get_norm_layer, LayerType
 from timm.models._builder import build_model_with_cfg
-from timm.models._features import feature_take_indices
+try:
+    from timm.models._features import feature_take_indices
+except ImportError:
+    def feature_take_indices(
+        num_features: int,
+        indices: Optional[Union[int, List[int]]] = None,
+        as_set: bool = False,
+    ) -> Tuple[Union[List[int], Set[int]], int]:
+        """Local fallback when timm < 1.0 has no feature_take_indices."""
+        if indices is None:
+            indices = num_features
+        if isinstance(indices, int):
+            assert 0 < indices <= num_features, (
+                f"last-n ({indices}) is out of range (1 to {num_features})"
+            )
+            take_indices = [num_features - indices + i for i in range(indices)]
+        else:
+            take_indices = []
+            for i in indices:
+                idx = num_features + i if i < 0 else i
+                assert 0 <= idx < num_features, (
+                    f"feature index {idx} is out of range (0 to {num_features - 1})"
+                )
+                take_indices.append(idx)
+        max_index = max(take_indices)
+        if as_set:
+            return set(take_indices), max_index
+        return take_indices, max_index
+
 from timm.models._manipulate import named_apply, checkpoint_seq, adapt_input_conv
 from timm.models._registry import generate_default_cfgs, register_model, register_model_deprecations
 import warnings

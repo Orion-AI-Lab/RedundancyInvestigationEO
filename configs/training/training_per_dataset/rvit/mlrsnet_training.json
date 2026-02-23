@@ -1,6 +1,6 @@
 {
     "epochs": 20,
-    "batch_size": 2048,
+    "batch_size": 64,
     "num_workers": 16, 
     "lr": 2e-4,
     "weight_decay": 1e-4,
@@ -20,15 +20,19 @@
     "pin_memory": true,
     "prefetch_factor": 48, // Optimized for 4 parallel processes (24 × 4 = 96 batches in memory)
     "persistent_workers": true, // Enabled to keep workers alive between epochs for faster data loading
-    "mixed_precision": true,
+    "mixed_precision": false,
     "fully_finetune": false,
     "linear_evaluation": false, // set to true to evaluate a pretrained model
-    "pretrained_model_path": null, //"/home/mila/n/nikolaos.bountos/Projects/Forest-Monitoring-Benchmark/checkpoints/mae/all/vit_patch_16_depth_12_heads_6/mask_ratio_0.75/vit_103.pt", //path for the checkpoint to be evaluated under the linear eval protocol
+    "pretrained_model_path":null,//"/mnt/bucket/tpapazaf/RedundancyInvestigation/Checkpoints/BigEarthNetCheckpoints/classification/bigearthnet/vit_base_patch16_224/upbeat-dragon-158/best_model_state_dict.pt", //path for the checkpoint to be evaluated under the linear eval protocol
+    "early_stopping": 5,
     "resume_checkpoint_path": null, // checkpoint to resume training
-    "enforce_resize": null, // if not none, data will be resized in both train/evaluation to the provided value (only for webdataset setting),
+    //"enforce_resize": null,//32, // if not none, data will be resized in both train/evaluation to the provided value (only for webdataset setting),
     "change_finetuning_resolution": null, // If not none, the finetuning vit will have its positional embedding changed to support the new res
-    "finetuning_patch_size": 16, // In accordance to finetuning resolution. Ideally keep it the same as in training
+    "finetuning_patch_size": null, //16, // In accordance to finetuning resolution. Ideally keep it the same as in training
     "start_epoch": 0, // epoch to continue training
     "log_images": false, // log segmentation masks and images to wandb
-    "torch_compile": false // enable torch.compile with error suppression
+    "torch_compile": false, // enable torch.compile with error suppression
+    "log_timing_metrics": true, // log train/step_ms, train/peak_mem_mb, train/throughput, train/retain_percent, train/encoder_gflops, train/gpu_util_pct to wandb every timing_log_interval steps (redundancy gains)
+    "timing_log_interval": 500, // log timing every N steps when log_timing_metrics is true
+    "log_timing_metrics_in_test": true // when true and phase=test and apply_mask_in_infer=true, log test/inference_ms, test/throughput, test/peak_mem_mb, test/retain_percent, test/encoder_gflops (and test/encoder_ms for segmentation) to wandb every timing_log_interval batches; summary test/*_mean at end
 }

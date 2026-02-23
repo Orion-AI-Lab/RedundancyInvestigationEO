@@ -1,0 +1,24 @@
+{
+    "dataset": "bigearthnet", // Options: All available datasets
+    "wandb": true,
+    "wandb_project": "RedundancyInvestigation_linear_eval",
+    "wandb_entity": "deepcube",
+    "wandb_id_resume": null,
+    "rgb": true,
+    "in_channels": 3,
+    "phase": "train",
+    "eval_checkpoint": null, //"/mnt/bucket/tpapazaf/RedundancyInvestigation/Checkpoints/BigEarthNetCheckpoints/classification/bigearthnet/vit_base_patch16_224/upbeat-vortex-1/best_model_state_dict.pt", 
+    "device": "cuda:2",
+    //"mixed_precision": true,
+    "seed": 999, // Seeds to consider [999, 222, 333]
+    "segmentation_pretrained_checkpoint": "/mnt/bucket/tpapazaf/RedundancyInvestigation/Checkpoints/FlairCheckpoints/segmentation/flair/rvitupernet/vit_base_patch16_224/vivid-sound-391/best_model_state_dict.pt",
+    "webdataset": true,
+    "webdataset_parallel": false,
+    "webdataset_write_processes": 8,
+    "webdataset_shuffle_size": 500,
+    "webdataset_initial_buffer": 500,
+    "max_samples_per_shard": 256, //set upper limit 256 samples per shard
+    "max_sample_resolution": null, // Store samples to shards with fixed resolution e.g Height x Width : 64x64. ONLY FOR PRETRAINING! The labels are deliberately not adapted and the resulting webdataset can only be used when the path is provided in the next option. For finetuning the resolution can be adapted at the augmentations.json
+    "webdataset_root_path": "/mnt/nvme/tpapazaf/datasets", //"/home/mila/n/nikolaos.bountos/scratch",//"/home/mila/n/nikolaos.bountos/scratch/Forests/webdataset_64",// 
+    "checkpoint_root_path": "/mnt/bucket/tpapazaf/RedundancyInvestigation/Checkpoints/BigEarthNetCheckpoints" //root directory for the checkpoint paths. If null checkpoints will be stored at the project's root directory. 
+}

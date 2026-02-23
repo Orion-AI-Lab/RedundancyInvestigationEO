@@ -8,6 +8,5 @@
     "retain_percent": 10,
     "pad_value": 0.0,
     "attention_mask": false,
-    "pretrained": false //,
-    //"patch_size": 64
+    "pretrained": false
 }

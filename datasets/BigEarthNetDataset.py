@@ -148,16 +148,16 @@ class BigEarthNetDataset(torch.utils.data.Dataset):
         # S1 indices: 0 (VV), 1 (VH)
         # S2 indices: 2 (B01), 3 (B02), 4 (B03), 5 (B04), 6 (B05), 7 (B06), 8 (B07), 9 (B08), 10 (B8A), 11 (B09), 12 (B11), 13 (B12)
         original_image = torch.cat((s1_patch, s2_patch), dim=0)
-        
-        # Create reordered image: [B04, B03, B02, VV, VH, B01, B05, B06, B07, B08, B8A, B09, B11, B12]
-        image = torch.cat([
-            original_image[5:6],   # B04 (Red)
-            original_image[4:5],   # B03 (Green)
-            original_image[3:4],   # B02 (Blue)
-            original_image[0:2],   # VV, VH
-            original_image[2:3],   # B01
-            original_image[6:],    # B05, B06, B07, B08, B8A, B09, B11, B12
-        ], dim=0).float().numpy()
+        image = original_image.float().numpy()
+        # # Create reordered image: [B04, B03, B02, VV, VH, B01, B05, B06, B07, B08, B8A, B09, B11, B12]
+        # image = torch.cat([
+        #     original_image[5:6],   # B04 (Red)
+        #     original_image[4:5],   # B03 (Green)
+        #     original_image[3:4],   # B02 (Blue)
+        #     original_image[0:2],   # VV, VH
+        #     original_image[2:3],   # B01
+        #     original_image[6:],    # B05, B06, B07, B08, B8A, B09, B11, B12
+        # ], dim=0).float().numpy()
 
 
         if not self.configs["webdataset"]:
