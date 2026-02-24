@@ -6,8 +6,8 @@
     "wandb_entity":"deepcube",
     "wandb_id_resume":null,
     "flair_miou_12": true,
-    "phase":"train",
-    "eval_checkpoint":null, //"/mnt/bucket/tpapazaf/RedundancyInvestigation/Checkpoints/FlairCheckpoints/segmentation/flair/rvitupernet/vit_base_patch16_224/golden-sky-124/best_model_state_dict.pt", //"/mnt/bucket/tpapazaf/RedundancyInvestigation/Checkpoints/FlairCheckpoints/segmentation/flair/rvitupernet/vit_base_patch16_224/visionary-violet-126/best_model_state_dict.pt", //"/mnt/bucket/tpapazaf/RedundancyInvestigation/Checkpoints/FlairCheckpoints/segmentation/flair/rvitupernet/vit_base_patch16_224/golden-resonance-260/best_model_state_dict.pt",
+    "phase":"test",
+    "eval_checkpoint":"/mnt/bucket/tpapazaf/RedundancyInvestigation/Checkpoints/FlairCheckpoints/segmentation/flair/rvitupernet/vit_base_patch16_224/golden-sky-124/best_model_state_dict.pt", //"/mnt/bucket/tpapazaf/RedundancyInvestigation/Checkpoints/FlairCheckpoints/segmentation/flair/rvitupernet/vit_base_patch16_224/visionary-violet-126/best_model_state_dict.pt", //"/mnt/bucket/tpapazaf/RedundancyInvestigation/Checkpoints/FlairCheckpoints/segmentation/flair/rvitupernet/vit_base_patch16_224/golden-resonance-260/best_model_state_dict.pt",
     "device":"cuda:4",
     "mixed_precision":true,
     "seed":999,
@@ -24,5 +24,6 @@
     "webdataset_root_path":"/mnt/nvme/tpapazaf/datasets", // Path where webdataset shards will be created
     "checkpoint_root_path":"/mnt/bucket/tpapazaf/RedundancyInvestigation/Checkpoints/FlairCheckpoints",//root directory for the checkpoint paths. If null checkpoints will be stored at the project's root directory. 
     //"use_measured_full_gflops": true, // If true, the full-model GFLOPs will be measured and logged to wandb.
+    "log_timing_metrics_in_test": true
     //"use_measured_encoder_gflops_fv": true, 
 }
