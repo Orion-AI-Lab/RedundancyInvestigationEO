@@ -29,30 +29,40 @@ pip install -r requirements_opt.txt, requirements_extra.txt (requirements.txt as
 ```css
 .
 ├── configs/
-│   ├── configs.json
+│   ├── main_configs/$dataset_name$_configs.json
 │   ├── datasets
 │   ├── method
 │   ├── download
 │   └── training
+│
 ├── datasets/
 │   ├── BigEarthNetDataset.py
 │   ├── FLAIRDataset.py
-│   └──  ...
+│   ├── MLRSNetDataset.py
+│   ├── WaitituDataset.py
+│   ├── WoodyDataset.py
+│   └── MaridaDataset.py
+│
 ├── downloading_scripts/
-|    ├── bigearthnet.sh
-|    ├── flair.sh
-|    └── ...
+│    ├── bigearthnet.sh
+│    ├── flair.sh
+│    ├── mlrsnet.sh
+│    ├── waititu.sh
+│    ├── woody.sh
+│    └── marida.sh
+│
 ├── training/
-|    └── classification.py
+│    └── classification.py
 |    └── segmentation.py
+│
 └── utilities/
      └── augmentations.py
      └── utils.py
      └── model_utilities.py
      └── webdataset_writer.py
+
 main.py
 downloader.py
-calc_stats.py
 ```
 
 `configs.json` contains high-level experimental choices, including the dataset of interest and whether to activate wandb.
@@ -198,9 +208,11 @@ The following table presents the datasets supported in this repo, along with som
 | Dataset | Modalities | Possible Tasks | Covered Areas | 
 | :---: | :---: | :---: | :---: |
 | [FLAIR](https://arxiv.org/pdf/2211.12979.pdf) | Aerial - RGB, NIR, Elevation|Segmentation| France|
-| [FLAIR2](https://arxiv.org/pdf/2305.14467.pdf) | Aerial - RGB, NIR, Elevation, Sentinel-2| France|
 | [Woody](https://www.sciencedirect.com/science/article/abs/pii/S0034425719301166)| Aerial | Segmentation | Chile|
 | [Waititu](https://zenodo.org/record/7648984#.Y_gBqLTMKBQ)| Aerial | Segmentation| New Zealand|
-| [BigEarthNet-MM](https://arxiv.org/pdf/2105.07921.pdf) | Sentinel-1, Sentinel-2| Multi-label Classification | Austria, Belgium, Finland, Ireland, Kosovo, Lithuania, Luxembourg, Portugal, Serbia, Switzerland|
+| [BigEarthNet](https://arxiv.org/pdf/2407.03653) | Sentinel-1, Sentinel-2| Multi-label Classification | Austria, Belgium, Finland, Ireland, Kosovo, Lithuania, Luxembourg, Portugal, Serbia, Switzerland|
+| [MLRSNet](https://arxiv.org/abs/2010.00243) | MultiSensor | Multi-label Classification | Global (more than 100 countries)|
+| [MARIDA](https://marine-debris.github.io/) | Sentinel-2 | Honduras, Guatemala, Haiti, Santo Domingo, Vietnam, South Africa, Scotland, Indonesia, Philippines, South Korea and China |
+
 
 
