@@ -22,7 +22,7 @@ This repository contains code for the investigation of redundancy on various dat
 ```
 conda env create --name envname --python=3.10
 
-pip install -r requirements.txt
+pip install -r requirements_opt.txt, requirements_extra.txt (requirements.txt as a back-up option)
 ```
 
 ### Repository Structure
@@ -35,16 +35,13 @@ pip install -r requirements.txt
 │   ├── download
 │   └── training
 ├── datasets/
-│   ├── CactusDataset.py
+│   ├── BigEarthNetDataset.py
 │   ├── FLAIRDataset.py
 │   └──  ...
 ├── downloading_scripts/
-|    ├── cactus.sh
-|    ├── treesat.sh
+|    ├── bigearthnet.sh
+|    ├── flair.sh
 |    └── ...
-├── tallos/
-|    ├── tallos_tools.py
-|    ├── ...
 ├── training/
 |    └── classification.py
 |    └── segmentation.py
@@ -63,16 +60,23 @@ calc_stats.py
 
 the `datasets/` directory contains the dataset specific configurations e.g task to solve, metrics to log etc. 
 
-Example configurations for the `cactus` dataset:
+Example configurations for the `bigearthnet` dataset:
 
 ```json5
 {
-    "root_path":"dataset_root_path",
-    "task":"classification", // Possible Tasks: Depending on the dataset,
-    "metrics": ["accuracy","fscore"], //Desired metrics to log
-    "num_classes":2,
-    "in_channels":3,
-    "meta_info":""
+    "root_path": "/mnt/nvme/tpapazaf/datasets",
+    "task": "classification", // Possible Tasks: Depending on the dataset,
+    "metrics": [
+        "accuracy",
+        "fscore",
+        "map"
+    ], //Desired metrics to log
+    "num_classes": 19,
+    "in_channels": 14,
+    "multilabel": true,
+    "image_size": 120,
+    "meta_info": "Data collected in Europe.",
+    "class_names": ["Urban fabric", "Industrial or commercial units", "Arable land", "Permanent crops", "Pastures", "Complex cultivation patterns", "Land principally occupied by agriculture, with significant areas of natural vegetation", "Agro-forestry areas", "Broad-leaved forest", "Coniferous forest", "Mixed forest", "Natural grassland and sparsely vegetated areas", "Moors, heathland and sclerophyllous vegetation", "Transitional woodland-shrub", "Beaches, dunes, sands", "Inland wetlands", "Coastal wetlands", "Inland waters", "Marine waters"]
 }
 ```
 
@@ -89,10 +93,7 @@ To download the datasets used in this benchmark select the desired dataset in `c
  
   `chmod +x download_script.sh`
 
-`downloader.py` will handle the downloading and all necessary restructuring needed for the experiments.
-
-
-**Note for object detection and point cloud datasets**: we provide scripts to create tiles or sub-point clouds for the NeonTree, ReforesTree and FORinstance datasets. Please refer to the corresponding scripts in the utilities folder, either for [detection](utilities/detection_datasets) or [point cloud](utilities/pointcloud_datasets) datasets.    
+`downloader.py` will handle the downloading and all necessary restructuring needed for the experiments.   
 
 
 ### Experiments
@@ -101,11 +102,11 @@ All information is aggregated by `main.py`. Given the aggregated configurations,
 
  For each available task, the data loader follows same/similar patterns, enabling the training/testing procedures to remain (mostly) dataset agnostic.
 
- To run an experiment one has to select the desired dataset in `configs/configs.json`. The training options can be defined in `configs/training/training.json`. If a dataset can support multiple tasks, the user can specify the desired task in `configs/datasets/[YOUR_DATASET].json`.
+ To run an experiment one has to select the desired dataset in `configs/main_configs/$dataset_name$.json`. The training options can be defined in `configs/training/training_per_dataset/$datastet_name$_training.json`.
 
- All datasets support the [webdataset](https://github.com/webdataset/webdataset) format for more efficient data loading. To enable it set `webdataset:true` in `configs/configs.json`. If webdataset shards exist, training begins immediately. Otherwise, the shards are created automatically. Depending on the dataset size this process may take from minutes to a few hours.
+ All datasets support the [webdataset](https://github.com/webdataset/webdataset) format for more efficient data loading. To enable it set `webdataset:true` in `configs/main_configs/$dataset_name$.json`. If webdataset shards exist, training begins immediately. Otherwise, the shards are created automatically. Depending on the dataset size this process may take from minutes to a few hours.
 
-If data augmentation is needed then set `augment:true` in `configs/training/training.json`. The desired data augmentations can be set in `configs/augmentations/augmentations.json`, along with their strength (probability of occuring) e.g if we want to always resize an image to 224x224 pixels set: 
+If data augmentation is needed then set `augment:true` in `configs/training/training_per_dataset/$datastet_name$_training.json`. The desired data augmentations can be set in `configs/augmentations/augmentations.json`, along with their strength (probability of occuring) e.g if we want to always resize an image to 224x224 pixels set: 
 ```json5
 "Resize":{
             "value":224,
@@ -131,69 +132,19 @@ In this benchmark we mainly focus on:
 
 | Model | Paper | 
 | :---: | :---: |
-|ResNet| [ResNet Paper](https://arxiv.org/abs/1512.03385)|
 |ViT| [ViT Paper](https://arxiv.org/abs/2010.11929)|
-|ConvNext|[ConvNext Paper](https://arxiv.org/abs/2201.03545)|
-|Swin-Transformer|[Swin Paper](https://arxiv.org/abs/2103.14030)|
 
 In terms of semantic semgnetation problems we focus on:
 
 | Model | Paper | 
 | :---: | :---: |
-|UNet| [UNet Paper](https://arxiv.org/abs/1505.04597)|
-|UNet++|[UNet++ Paper](https://arxiv.org/abs/1807.10165)|
-|DeepLabv3plus|[DeepLabv3plus Paper](https://arxiv.org/abs/1802.02611)|
 |UperNet|[UperNet Paper](https://arxiv.org/abs/1807.10221)|
-|SegFormer|[SegFormer Paper TBD](https://arxiv.org/abs/2105.15203)|
-
-UNet, UNet++ and DeepLabv3plus support most CNN backbones available in timm plus the [TransMix transformer](https://arxiv.org/abs/2111.09833).
-UperNet supports variants of ConvNext and Swin, while SegFormer supports 5 variants of the [Mix Transformer](https://arxiv.org/abs/2105.15203) with increasing parameter size (b0-b5).
 
 #### Adding new models
 To add support for a new model just include its construction in `utilities/model_utilities.py`. Depending on the task, the models are constructed in one of the following functions:
 ```
-create_classifier() // for classification tasks,
-create_segmentor() // for semantic segmentation tasks and,
-create_detector() // for object detection tasks
-```
-#### Adding new tasks
-In case one needs to solve a task not included in this repo, they have to update the pipeline with the following steps:
-
-1.  Create a training/testing procedure in `training/` as done in `training/classification.py`.
-2. Update the `create_procedures()` function in the `utilities/utils.py`, to handle the desired task e.g for classification:
-```
-if configs['task']=='classification':
-    trainer = classification.train
-    tester = classification.test
-```
-3. Create a config file specifying the desired model and other hyperparameters needed for the training/testing procedures in `configs/method/your_task.json`. Examples can be found in `configs/method/` e.g `configs/method/classification.json`.
-
-4. Update the `create_checkpoint_path()` function in `utilities/utils.py` to create a unique checkpoint for the given task given the provided configs for each experiment. E.g for the semantic segmentation task:
-```
- if configs['task']=='segmentation':
-        checkpoint_path = (
-                Path("checkpoints")
-                / configs["task"].lower()
-                / configs["dataset"].lower()
-                / configs["architecture"].lower()
-                / configs["backbone"].lower()
-            )
-```
-
-5. Run your experiments by modifying your task config file `configs/method/your_task.json` and running `python main.py`.
-
-
-#### Train Foundation Models
-
-We currently support the training of multimodal [Masked Autoencoders (MAE)](https://arxiv.org/abs/2111.06377). To enable it set "all" as dataset in `configs.json`. 
-`configs/datasets/all.json` provides an example of the needed configurations. Set augmentations to true in `configs/training/training.json` and the desired augmentations in `configs/augmentations/augmentations.json` e.g
-```
-"RandomResizedCrop": {
-            "value": 224,
-            "scale":[0.2, 1.0],
-            "interpolation":3,
-            "p": 1.0
-        },
+create_classifier() // for classification tasks, and
+create_segmentor() // for semantic segmentation tasks
 ```
 
 
@@ -246,20 +197,10 @@ The following table presents the datasets supported in this repo, along with som
 
 | Dataset | Modalities | Possible Tasks | Covered Areas | 
 | :---: | :---: | :---: | :---: |
-| [Cactus](https://www.sciencedirect.com/science/article/abs/pii/S1574954119300895) | Aerial RGB |Classification | Mexico|
 | [FLAIR](https://arxiv.org/pdf/2211.12979.pdf) | Aerial - RGB, NIR, Elevation|Segmentation| France|
 | [FLAIR2](https://arxiv.org/pdf/2305.14467.pdf) | Aerial - RGB, NIR, Elevation, Sentinel-2| France|
-| [TreeSatAI](https://essd.copernicus.org/articles/15/681/2023/)|Aerial, Sentinel-1, Sentinel-2 | Classification |Germany|
 | [Woody](https://www.sciencedirect.com/science/article/abs/pii/S0034425719301166)| Aerial | Segmentation | Chile|
-| [Yurf](https://www.mdpi.com/2072-4292/12/8/1287)| Aerial | Segmentation | Japan|
-| [ReforesTree](https://ojs.aaai.org/index.php/AAAI/article/view/21471)| Aerial |Detection, Regression | Ecuador|
-| [ForestNet](https://stanfordmlgroup.github.io/projects/forestnet/)| Landsat-8|Classification, Segmentation| Indonesia|
-| [NeonTree](https://zenodo.org/record/5914554#.YfRhcPXMKHE)| Satellite RGB, LiDAR, Hyperspectral| Detection |USA|
-| [Spekboom](https://zenodo.org/record/7564954)| AERIAL| Segmentation| South Africa|
 | [Waititu](https://zenodo.org/record/7648984#.Y_gBqLTMKBQ)| Aerial | Segmentation| New Zealand|
 | [BigEarthNet-MM](https://arxiv.org/pdf/2105.07921.pdf) | Sentinel-1, Sentinel-2| Multi-label Classification | Austria, Belgium, Finland, Ireland, Kosovo, Lithuania, Luxembourg, Portugal, Serbia, Switzerland|
-| [Sen12MS](https://arxiv.org/pdf/1906.07789.pdf)|Sentinel-1, Sentinel-2|Multi-label Classification| Global|
-| [RapidAI4EO](https://rapidai4eo.source.coop/)|Planet, Sentinel-2|Multi-label Classification| Europe|
-| [TalloS](https://github.com/RolnickLab/Forest-Monitoring-Benchmark)|Sentinel-1, Sentinel-2, DEM, ERA-5|Multi-label Classification| Global|
 
 
