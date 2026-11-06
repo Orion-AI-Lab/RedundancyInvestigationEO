@@ -152,3 +152,4 @@ webdataset==0.2.86
 xarray==2025.6.1
 xmltodict==0.13.0
 yarl==1.22.0
+gdal==3.4.1
