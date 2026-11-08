@@ -1,11 +1,15 @@
 {
-    "root_path":"/mnt/nvme/tpapazaf/datasets",
-    "task":"segmentation",
-    "metrics":["accuracy","fscore","iou"],
-    "multilabel":false,
-    "num_classes":12,
-    "in_channels":11,
-    "image_size":256,
-    "meta_information":"",
+    "root_path": "/mnt/nvme1/tpapazaf/datasets",
+    "task": "segmentation",
+    "metrics": [
+        "accuracy",
+        "fscore",
+        "iou"
+    ],
+    "multilabel": false,
+    "num_classes": 12,
+    "in_channels": 11,
+    "image_size": 256,
+    "meta_information": "",
     "ignore_index": 11
 }

@@ -1,5 +1,5 @@
 {
-    "root_path": "/mnt/nvme/tpapazaf/datasets",
+    "root_path": "/mnt/nvme1/tpapazaf/datasets",
     "task": "segmentation",
     "metrics": [
         "accuracy",

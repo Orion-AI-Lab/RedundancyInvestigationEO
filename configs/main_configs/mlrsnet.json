@@ -4,8 +4,8 @@
     "wandb_project": "RedundancyInvestigation_classification",
     "wandb_entity": "deepcube",
     "wandb_id_resume": null,
-    "phase": "train",
-    "eval_checkpoint": null, // Checkpoint to evaluate on when phase=test. If null the last checkpoint will be used. If not null, the evaluation will be based on the provided checkpoint path.
+    "phase": "test",
+    "eval_checkpoint": "checkpoints/classification/mlrsnet/vit_base_patch16_224/offline/best_model.pt", // Checkpoint to evaluate on when phase=test. If null the last checkpoint will be used. If not null, the evaluation will be based on the provided checkpoint path.
     "device": "cuda:2",
     "enforce_resize": null,
     //"dataset_percentage": 0.1,
