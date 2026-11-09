@@ -47,7 +47,6 @@ class RViT(nn.Module):
 
         if not self.attention_mask:
             self.model = timm.create_model(backbone,in_chans = num_channels, num_classes=num_classes, img_size=image_size, dynamic_img_pad=True, dynamic_img_size=True,pretrained=pretrained)
-            #self.model.patch_embed.set_input_size(image_size, patch_size=patch_size)
         else:
             from model_zoo import MaskAttentionViT as MaskAttentionViT
 
@@ -56,7 +55,6 @@ class RViT(nn.Module):
                                 "Change the attention_mask to False or the implementation to max_len")
 
             self.model = timm.create_model(backbone, img_size=image_size, num_classes=num_classes, dynamic_img_pad=True, dynamic_img_size=True, in_chans=num_channels, pretrained=pretrained)
-            #self.model.patch_embed.set_input_size(image_size, patch_size)
             
 
         #Ensure padding implementation is provided
@@ -141,7 +139,6 @@ class RViT(nn.Module):
         cos_sim = self.batch_cos_similarity(out)
         
         keep_mask = self.get_mask_vectorised(cos_sim)
-        # print("Checkpoint1", keep_mask[1,:].tolist())  # Commented out for torch.compile compatibility
         #Keep mask per row sum
         retained_tokens = [x[i, keep_mask[i]] for i in range(x.shape[0])]
 
@@ -153,7 +150,6 @@ class RViT(nn.Module):
         max_len = min(max_len, total_patches)
         #Calc topk indices
         topk_indices = self.get_topk_indices_redundancy_based(cos_sim,max_len)
-        #topk_indices = self.get_topk_indices_mean_similarity(cos_sim,max_len)
         # Sort indices to ensure consistent ordering
         topk_indices, _ = torch.sort(topk_indices, dim=1)
         if self.model.global_pool=='token':
@@ -661,15 +657,6 @@ class RViT(nn.Module):
 
         # Forward through the model
         x = self.model.norm_pre(x)
-
-        """
-        if self.training and self.attention_mask:
-            token_attention_mask = token_attention_mask[:, None, None, :]  # Shape it for attention layers
-            for module in self.model.blocks:
-                x = module(x, token_attention_mask)
-        else:
-            x = self.model.blocks(x)
-        """
 
         
         if token_attention_mask is not None:
