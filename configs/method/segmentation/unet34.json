@@ -1,5 +1,0 @@
-{
-    "architecture":"unet",
-    "backbone":"resnet34",
-    "pretrained":true
-}

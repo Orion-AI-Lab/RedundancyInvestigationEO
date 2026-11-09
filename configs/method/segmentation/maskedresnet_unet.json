@@ -1,9 +1,0 @@
-{
-    "architecture": "maskedresnet_unet",
-    "backbone": "resnet34",
-    "pretrained": true,
-    "retain_percent": 100,
-    "mask_threshold": 0.9,
-    "implementation": "topx%",
-    "pad_value": 0.0
-}

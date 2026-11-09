@@ -1,9 +1,0 @@
-{
-    "backbone":"act_base",
-    "reduction_ratio":[0.75],
-    "linkage":"average",
-    "reduction_loc":[1],
-    "pretrained":false,
-    "proportional_attn":true,
-    "distance_threshold":null
-}

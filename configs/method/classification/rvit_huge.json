@@ -1,7 +1,0 @@
-{
-    "backbone":"vit_huge_patch14_224",
-    "mask_threshold":0.7,
-    "rvit":true,
-    "mask_in_token_space":false,
-    "pretrained":true
-}
