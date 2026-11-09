@@ -743,6 +743,7 @@ class RViT(nn.Module):
             return x, hierarchical_mask, final_mask
 
 
+
 if __name__ == '__main__':
     model = RViT(num_classes=14, backbone='vit_base_patch16_224', image_size=128, num_channels=14, mask_threshold=0.9, mask_in_token_space=False, implementation="max_len", pad_value = 0.0, retain_percent=60, attention_mask=True)
     
