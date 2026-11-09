@@ -31,7 +31,7 @@ fiona==1.10.1
 fonttools==4.61.1
 frozenlist==1.8.0
 fsspec==2025.12.0
-geopandas==0.14.3
+geopandas==1.0.1
 gitdb==4.0.12
 GitPython==3.1.46
 hf-xet==1.2.0
@@ -100,6 +100,7 @@ pydantic_core==2.41.5
 Pygments==2.19.2
 pyjson5==1.6.5
 pyparsing==3.3.1
+pyogrio==0.13.0
 pyproj==3.7.1
 python-dateutil==2.9.0.post0
 pytorch-lightning==2.6.0
