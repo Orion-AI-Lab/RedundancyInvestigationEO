@@ -12,8 +12,8 @@
     "class_weight_epsilon": 1.05,
     "class_weight_max": 10,
     "class_weight_max_batches": null,
-    "class_weights_path": "/mnt/nvme/tpapazaf/RedundancyInvestigation/configs/training/training_per_dataset/rvitupernet/flair_class_weights.pt",
-    "class_weights_save_path": null, //"/mnt/nvme/tpapazaf/RedundancyInvestigation/configs/training/training_per_dataset/rvitupernet/woody_class_weights.pt", // optional filename: flair_class_weights.pt
+    "class_weights_path": "/home/tpapazaf/shared_storage/tpapazaf/RedundancyInvestigation/configs/training/training_per_dataset/rvitupernet/flair_class_weights.pt", //"/home/tpapazaf/shared_storage/tpapazaf/RedundancyInvestigation/configs/training/training_per_dataset/rvitupernet/flair_class_weights.pt",
+    "class_weights_save_path": null,//"/home/tpapazaf/shared_storage/tpapazaf/RedundancyInvestigation/configs/training/training_per_dataset/rvitupernet/flair_class_weights.pt",
     "class_weight_normalize": "max_1", //"max_1",
     "class_weight_normalize_min": 0.1,
     "dice_weight": 0.75,
