@@ -11,7 +11,7 @@ This repository contains code for the paper: Hide and Seek: Investigating Redund
     - [Webdataset setup](#webdataset-setup)
     - [Train one setting](#train-one-setting)
     - [Config files used for the main experiments](#config-files-used-for-the-main-experiments)
-    -[Evaluate a saved checkpoint](#evaluate-a-saved-checkpoint)
+    - [Evaluate a saved checkpoint](#evaluate-a-saved-checkpoint)
 - [Plotting data](#plotting-data)
 - [Supported Models](#supported-models)
 - [Supported datasets](#supported-datasets)
@@ -20,7 +20,7 @@ This repository contains code for the paper: Hide and Seek: Investigating Redund
     - [Add new augmentation methods](#adding-data-augmentations)
     - [Add new datasets](#adding-new-datasets)
     - [Adding new tasks](#adding-new-tasks)
--[Citation]
+- [Citation](#citation)
 
 
 ### Setup project
