@@ -95,6 +95,7 @@ pretrainedmodels==0.7.4
 propcache==0.4.1
 protobuf==4.25.8
 psutil==7.2.1
+pyarrow==25.0.1
 pydantic==2.12.5
 pydantic_core==2.41.5
 Pygments==2.19.2
