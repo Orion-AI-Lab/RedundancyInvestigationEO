@@ -33,7 +33,12 @@ def main():
         sys.exit(1)
 
     script_map = {
-        "mlrsnet": "./downloading_scripts/mlrsnet.sh"
+        "bigearthnet": "./downloading_scripts/bigearthnet.sh",
+        "flair": "./downloading_scripts/flair.sh",
+        "marida": "./downloading_scripts/marida.sh",
+        "mlrsnet": "./downloading_scripts/mlrsnet.sh",
+        "waititu": "./downloading_scripts/waititu.sh",
+        "woody": "./downloading_scripts/woody.sh",
     }
 
     script_path = script_map.get(dataset.lower())

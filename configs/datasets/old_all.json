@@ -1,76 +1,211 @@
 {
-    "train_datasets":["tallos","rapidai4eo","ssl4eos1s2","waititu","spekboom","ssl4eol"],
+    "train_datasets":["ssl4eol"],//,"rapidai4eo","tallos","flair","uav","fivebillionpixels"],
     "task":"mae",
     "modality_channels": {
-        "0": 2,
-        "1": 3,
-        "2": 5,
-        "3": 2,
-        "4": 1,
-        "5":3,
-        "6":1, // DEM
-        "7":1, // aerial-NIR
-        "8":3, // Landsat RGB
-        "9":1, // Landsat NIR
-        "10":2, // Landsat SWIR
-        "11":1, // Landsat Panchromatic
+        "0": "planet-r",
+        "1": "planet-g",
+        "2": "planet-b",
+        "3": "planet-nir",
+        "4": "sentinel-1-vv",
+        "5":"sentinel-1-vh",
+        "6":"sentinel-2-b1",
+        "7":"sentinel-2-b2",
+        "8":"sentinel-2-b3",
+        "9":"sentinel-2-b4",
+        "10":"sentinel-2-b5",
+        "11":"sentinel-2-b6",
+        "12":"sentinel-2-b7",
+        "13":"sentinel-2-b8",
+        "14":"sentinel-2-b8a",
+        "15":"sentinel-2-b9",
+        "16":"sentinel-2-b10",
+        "17":"sentinel-2-b11",
+        "18":"sentinel-2-b12",
+        "19":"landsat-r",
+        "20":"landsat-g",
+        "21":"landsat-b",
+        "22":"landsat-nir",
+        "23":"landsat-swir-1",
+        "24":"landsat-swir-2",
+        "25":"landsat-panchromatic",
+        "26":"landsat-aerosol",
+        "27":"landsat-cirrus",
+        "28":"aerial-r",
+        "29":"aerial-g",
+        "30":"aerial-b",
+        "31":"aerial-nir",
+        "32":"dem",
+        "33":"gaofen2-r",
+        "34":"gaofen2-g",
+        "35":"gaofen2-b",
+        "36":"gaofen2-nir"
     },
-    "modality_indices":{ // Provide the indices where each modality can be found in each dataloader.
-        
-        "sar":{ //10m resolution bands
-            "sen12ms": [0,1],
-            "bigearthnet":[0,1],
-            "tallos":[10,11]
+    "dataset_modality_index":{
+        "rapidai4eo":{
+            "planet-r":0,
+            "planet-g":1,
+            "planet-b":2,
+            "planet-nir":3,
+            "sentinel-2-b2":4,
+            "sentinel-2-b3":5,
+            "sentinel-2-b4":6,
+            "sentinel-2-b8":7,
+            "sentinel-2-b5":8,
+            "sentinel-2-b6":9,
+            "sentinel-2-b7":10,
+            "sentinel-2-b8a":11,
+            "sentinel-2-b11":12,
+            "sentinel-2-b1":13,
+            "sentinel-2-b9":14
         },
-        "sentinel2-rgb":{ //10m resolution bands
-            "sen12ms":[5,4,3],
-            "bigearthnet":[5,4,3],
-            "tallos":[2,1,0],
-            "flair2":[7,6,5],
+        "ssl4eos1s2":{
+            "sentinel-1-vv":0,
+            "sentinel-1-vh":1,
+            "sentinel-2-b1":2,
+            "sentinel-2-b2":3,
+            "sentinel-2-b3":4,
+            "sentinel-2-b4":5,
+            "sentinel-2-b5":6,
+            "sentinel-2-b6":7,
+            "sentinel-2-b7":8,
+            "sentinel-2-b8":9,
+            "sentinel-2-b8a":10,
+            "sentinel-2-b9":11,
+            "sentinel-2-b11":12,
+            "sentinel-2-b12":13,
+
         },
-        "sentinel2-vnir":{ // Visible Near-Infrared Bands // 20m except band 8 with 10m
-            "sen12ms":[9,6,7,8,10],
-            "bigearthnet":[9,6,7,8,10],
-            "tallos":[3,4,5,6,7],
-            "flair2":[11,8,9,10,12]
+        "ssl4eol":{
+            "landsat-aerosol":0,
+            "landsat-r":3,
+            "landsat-g":2,
+            "landsat-b":1,
+            "landsat-nir":4,
+            "landsat-swir-1":5,
+            "landsat-swir-2":6,
+            "landsat-panchromatic":7,
+            "landsat-cirrus":8
         },
-        "sentinel2-swir20m":{ // Short wave infrared bands // 20m bands
-            "sen12ms":[12,13],
-            "bigearthnet":[12,13],
-            "tallos":[8,9],
-            "flair2":[13,14]
+        "spekboom":{
+            "aerial-r":0,
+            "aerial-g":1,
+            "aerial-b":2,
         },
-        "sentinel2-swir60m":{
-            "sen12ms":[11], //,12], Remove band 12 for consistency
-            "bigearthnet":[11]
+        "waititu":{
+            "aerial-r":0,
+            "aerial-g":1,
+            "aerial-b":2
         },
-        "aerial":{
-            "flair":[0,1,2],
-            "flair2":[0,1,2],
-            "waititu":[0,1,2], //,3], Need to decide whether to use the alpha channel.
-            "spekboom":[0,1,2], // ,3] Need to decide whether to use the alpha channel.
-            "reforestree":[0,1,2]
+        "woody":{
+             "aerial-r":0,
+            "aerial-g":1,
+            "aerial-b":2
         },
-        "dem":{
-            "tallos":[10],
-            "flair2":[4],
+        "flair":{
+            "aerial-r":0,
+            "aerial-g":1,
+            "aerial-b":2,
+            "aerial-nir":3,
+            "dem":4, // in pretraining we do not use that.
         },
-        "aerial-nir":{
-            "flair":[3],
-            "flair2":[3]
+        "flair2":{
+            "aerial-r":0,
+            "aerial-g":1,
+            "aerial-b":2,
+            "aerial-nir":3,
+            "dem":4,
+            "sentinel-2-b2":5,
+            "sentinel-2-b3":6,
+            "sentinel-2-b4":7,
+            "sentinel-2-b5":8,
+            "sentinel-2-b6":9,
+            "sentinel-2-b7":10,
+            "sentinel-2-b8":11,
+            "sentinel-2-b8a":12,
+            "sentinel-2-b11":13,
+            "sentinel-2-b12":14,
         },
-        "landsat-rgb":{
-            "ssl4eol":[3,2,1]
+        "tallos":{
+            "sentinel-2-b2":0,
+            "sentinel-2-b3":1,
+            "sentinel-2-b4":2,
+            "sentinel-2-b5":3,
+            "sentinel-2-b6":4,
+            "sentinel-2-b7":5,
+            "sentinel-2-b8":6,
+            "sentinel-2-b8a":7,
+            "sentinel-2-b11":8,
+            "sentinel-2-b12":9,
+            "sentinel-1-vv":10,
+            "sentinel-1-vh":11,
+            "dem":12
         },
-        "landsat-nir":{//30m
-            "ssl4eol":[4]
+        "uav":{
+            "aerial-r":0,
+            "aerial-g":1,
+            "aerial-b":2
         },
-        "landsat-swir":{//30m
-            "ssl4eol":[5,6]
+        "fivebillionpixels":{
+            "gaofen2-r":0,
+            "gaofen2-g":1,
+            "gaofen2-b":2,
+            "gaofen2-nir":3
         },
-        "landsat-pan":{//panchromatic 15m
-            "ssl4eol":[7]
+        // "treesatai":{
+        //     "sentinel-1-vv":0,
+        //     "sentinel-1-vh":1,
+        // },
+        "treesatai":{
+            "sentinel-2-b2":0,
+            "sentinel-2-b3":1,
+            "sentinel-2-b4":2,
+            "sentinel-2-b8":3,
+            "sentinel-2-b5":4,
+            "sentinel-2-b6":5,
+            "sentinel-2-b7":6,
+            "sentinel-2-b8a":7,
+            "sentinel-2-b11":8,
+            "sentinel-2-b12":9,
+            "sentinel-2-b9":11,
         },
-    },
+        "bigearthnet":{
+            "sentinel-1-vv":0,
+            "sentinel-1-vh":1,
+            "sentinel-2-b1":2,
+            "sentinel-2-b2":3,
+            "sentinel-2-b3":4,
+            "sentinel-2-b4":5,
+            "sentinel-2-b5":6,
+            "sentinel-2-b6":7,
+            "sentinel-2-b7":8,
+            "sentinel-2-b8":9,
+            "sentinel-2-b8a":10,
+            "sentinel-2-b9":11,
+            "sentinel-2-b11":12,
+            "sentinel-2-b12":13
+        },
+        "sen12ms":{
+            "sentinel-1-vv":0,
+            "sentinel-1-vh":1,
+            "sentinel-2-b1":2,
+            "sentinel-2-b2":3,
+            "sentinel-2-b3":4,
+            "sentinel-2-b4":5,
+            "sentinel-2-b5":6,
+            "sentinel-2-b6":7,
+            "sentinel-2-b7":8,
+            "sentinel-2-b8":9,
+            "sentinel-2-b8a":10,
+            "sentinel-2-b9":11,
+            "sentinel-2-b10":12,
+            "sentinel-2-b11":13,
+            "sentinel-2-b12":14,
+        },
+        "forestnet":{
+            "landsat-r":0,
+            "landsat-g":1,
+            "landsat-b":2,
+        }
+    }, 
     "split_workers":false,
 }

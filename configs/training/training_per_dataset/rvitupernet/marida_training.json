@@ -9,17 +9,17 @@
     "warmup_epochs": 7,
     "min_lr": 1e-7,
     "grad_clip_max_norm": 1.0,
-    "loss":"ce_dice_weighted",
+    "loss": "ce_dice_weighted",
     "class_weight_epsilon": 1.02,
     "class_weight_max": 15,
     "class_weight_max_batches": null,
-    "class_weights_path": "/mnt/nvme/tpapazaf/RedundancyInvestigation/configs/training/training_per_dataset/rvitupernet/marida_class_weights.pt",
-    "class_weights_save_path": null, //"/mnt/nvme/tpapazaf/RedundancyInvestigation/configs/training/training_per_dataset/rvitupernet/marida_class_weights.pt", // optional filename: flair_class_weights.pt
+    "class_weights_path": "/home/tpapazaf/shared_storage/tpapazaf/RedundancyInvestigation/configs/training/training_per_dataset/rvitupernet/marida_class_weights.pt",
+    "class_weights_save_path": null, //"/home/tpapazaf/shared_storage/tpapazaf/RedundancyInvestigation/configs/training/training_per_dataset/rvitupernet/marida_class_weights.pt", // optional filename: flair_class_weights.pt
     "class_weight_normalize": null, //"max_1",//"max_1",//"minmax_01",
     "class_weight_normalize_min": null, //0.5, //1.0,
     "dice_weight": 0.85,
     //"marida_non11_patch_threshold": null,
-    "marida_merge_debris_subclasses": false,  // true: 8 thematic classes (merge 1–4 → 1), num_classes=9, ignore_index=8; false: 11 thematic, num_classes=12, ignore_index=11
+    "marida_merge_debris_subclasses": false, // true: 8 thematic classes (merge 1–4 → 1), num_classes=9, ignore_index=8; false: 11 thematic, num_classes=12, ignore_index=11
     "optimizer": "adam",
     "normalization": "standard", //"standard", // Options: standard (0 mean, 1 std), min-max (min 0, max 1), none
     "augment": false,
@@ -45,11 +45,9 @@
     "debug_visualization": false, // log segmentation masks and images to wandb
     "strict_deterministic": true, // true: cuDNN deterministic, TF32 off, use_deterministic_algorithms (main.py); false: same as other datasets (faster). Does NOT affect DeterministicAdaptiveAvgPool2d in RViTUPerNet (model impl).
     "model_ema": true, // Exponential Moving Average of weights (like timm train.py) to help mIoU
-    "model_ema_decay": 0.999,//0.9991 // Decay factor (timm default)
-    "model_ema_warmup":true, // Optional warmup for EMA decay
+    "model_ema_decay": 0.999, //0.9991 // Decay factor (timm default)
+    "model_ema_warmup": true, // Optional warmup for EMA decay
     "torch_compile": false,
     "log_timing_metrics": true,
     "timing_log_interval": 500
 }
-
-

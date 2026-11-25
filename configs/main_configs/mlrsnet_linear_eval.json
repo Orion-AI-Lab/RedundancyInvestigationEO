@@ -1,12 +1,12 @@
 {
     "dataset": "mlrsnet",
-    "wandb": "true",
+    "wandb": "false",
     "wandb_project": "RedundancyInvestigation_linear_eval",
     "wandb_entity": "deepcube",
     "wandb_id_resume": null,
     "phase": "train",
     "device": "cuda:0",
-    "pretrained_model_path": "/mnt/bucket/tpapazaf/RedundancyInvestigation/Checkpoints/BigEarthNetCheckpoints/classification/bigearthnet/vit_base_patch16_224/solar-sound-392/best_model_state_dict.pt",
+    "pretrained_model_path": "/home/tpapazaf/shared_storage/tpapazaf/RedundancyInvestigation/checkpoints/segmentation/WaitituCheckpoints/segmentation/waititu/rvitupernet/vit_base_patch16_224/offline/best_model_state_dict.pt",
     //"dataset_percentage": 0.1,
     "seed": 999,
     "webdataset": true,
@@ -17,5 +17,5 @@
     "max_samples_per_shard": 256,
     "max_sample_resolution": null,
     "webdataset_root_path": "/mnt/nvme1/tpapazaf/datasets",
-    "checkpoint_root_path": "/mnt/bucket/tpapazaf/RedundancyInvestigation/Checkpoints/MLRSNetCheckpoints"
+    "checkpoint_root_path": "/home/tpapazaf/shared_storage/tpapazaf/RedundancyInvestigation/Checkpoints/MLRSNetCheckpoints"
 }

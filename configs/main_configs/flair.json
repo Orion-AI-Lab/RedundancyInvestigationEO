@@ -1,17 +1,17 @@
 {
     "dataset": "flair", // Options: All available datasets
-    "use_measured_full_gflops": true, // measure full/encoder GFLOPs via fvcore (logs encoder_gflops_fv)
+    "use_measured_full_gflops": false, // measure full/encoder GFLOPs via fvcore (logs encoder_gflops_fv)
     "wandb": false,
     "wandb_project": "RedundancyInvestigation_gains_encoder",
     "wandb_entity": "deepcube",
     "wandb_id_resume": null,
     "flair_miou_12": true,
     "phase": "train",
-    "eval_checkpoint": "/mnt/bucket/tpapazaf/RedundancyInvestigation/Checkpoints/FlairCheckpoints/segmentation/flair/rvitupernet/vit_base_patch16_224/golden-sky-124/best_model_state_dict.pt", //"/mnt/bucket/tpapazaf/RedundancyInvestigation/Checkpoints/FlairCheckpoints/segmentation/flair/rvitupernet/vit_base_patch16_224/visionary-violet-126/best_model_state_dict.pt", //"/mnt/bucket/tpapazaf/RedundancyInvestigation/Checkpoints/FlairCheckpoints/segmentation/flair/rvitupernet/vit_base_patch16_224/golden-resonance-260/best_model_state_dict.pt",
-    "device": "cuda:4",
+    "eval_checkpoint": null, //"/home/tpapazaf/shared_storage/tpapazaf/RedundancyInvestigation/checkpoints/FlairCheckpoints/segmentation/flair/rvitupernet/vit_base_patch16_224/offline/best_model_state_dict.pt",
+    "device": "cuda:0",
     "mixed_precision": true,
     "seed": 999,
-    "dataset_percentage": 0.1,
+    "dataset_percentage": null,
     "enforce_resize": null, // if not none, data will be resized in both train/evaluation to the provided value (only for webdataset setting),
     "webdataset": true,
     "webdataset_parallel": true,

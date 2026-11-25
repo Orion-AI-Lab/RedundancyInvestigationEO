@@ -178,7 +178,7 @@ class UPerNetDecoder(nn.Module):
         )
 
     def forward(self, *features):
-        output_size = self.output_size#features[0].shape[2:]
+        output_size = self.output_size
         target_size = [size // 4 for size in output_size]
 
         features = features[1:]  # remove first skip with same spatial resolution
@@ -430,19 +430,13 @@ class RViTUPerNet(nn.Module):
             pred = torch.argmax(out.detach().cpu(), axis=1)
             self.plot_cnt += 1
             # Assume patch_size is stored in the patch embedding
-            #patch_size = self.model.patch_embed.patch_size[0]
             patch_size = self.encoder.model.patch_embed.patch_size[0]
             # Calculate the number of patches along width. If your input isn't padded,
             # you might need to compute it as follows:
             num_patches_w = (raw_input.shape[3] + (patch_size - raw_input.shape[3] % patch_size) % patch_size) // patch_size
 
-            #self.visualization_output(raw_input, label, patch_size, num_patches_w, final_mask.shape[1], pred[0].detach().cpu().numpy())
             
         if self.training:
-            # #Reshape mask to patch size x patch size
-            # mask = mask.view(mask.shape[0], self.height, self.height).float().unsqueeze(1)
-            # #Return the mask to the original size
-            # mask = F.interpolate(mask, size=(out.shape[2], out.shape[3]), mode="nearest").squeeze()
             B = mask.shape[0]
             num_tokens = mask.shape[1]
             h = w = int(round(num_tokens ** 0.5))

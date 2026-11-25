@@ -1,4 +1,4 @@
 {
-    "dataset":"bigearthnet", // Dataset name
-    "root_path":"/mnt/nvme/tpapazaf/datasets", // Where to save the data.
+    "dataset": "bigearthnet",
+    "root_path": "/mnt/nvme1/tpapazaf/datasets"
 }

@@ -66,7 +66,8 @@ implementations=("random_topx%") #"topx%")
 
 #mask_thresholds=(0.95)
 #retain_percents=(100 75 50 25 15 5)
-retain_percents=(100 75 50 25 15 5)
+#retain_percents=(100 75 50 25 15 5)
+retain_percents=(15)
 #retain_percents=(75 50) #50 25 15 5) #90 80 70 60 50 40 30 20 10 5)
 #retain_percents=(5 25 50 75 100)
 
@@ -80,24 +81,24 @@ PRETRAINED="true"
 #main_config="configs/main_configs/bigearthnet.json"
 #main_config="configs/main_configs/mlrsnet.json"
 #main_config="configs/main_configs/woody.json"
-main_config="configs/main_configs/flair.json"
+#main_config="configs/main_configs/flair.json"
 #main_config="configs/main_configs/marida.json"
 #main_config="configs/main_configs/bigearthnet_linear_eval.json"
-#main_config="configs/main_configs/mlrsnet_linear_eval.json"
+main_config="configs/main_configs/mlrsnet_linear_eval.json"
 #main_config="configs/main_configs/marida.json"
 #main_config="configs/main_configs/waititu.json"
-#method_config="configs/method/classification/rvit.json"
-method_config="configs/method/segmentation/rvitupernet.json"
+method_config="configs/method/classification/rvit.json"
+#method_config="configs/method/segmentation/rvitupernet.json"
 #method_config="configs/method/segmentation/unet50.json"
 #training_config="configs/training/training_per_dataset/rvit/bigearthnet_training.json"
-#training_config="configs/training/training_per_dataset/rvit/mlrsnet_training.json"
+training_config="configs/training/training_per_dataset/rvit/mlrsnet_training.json"
 #training_config="configs/training/training_per_dataset/rvitupernet/marida_training.json"
 #training_config="configs/training/training_per_dataset/rvit/mlrsnet_from_bigearthnet_training.json"
 #training_config="configs/training/training_per_dataset/unet/marida_baseline_training.json"
 #training_config="configs/training/training_per_dataset/rvitupernet/waititu_training.json"
 #training_config="configs/training/training_per_dataset/rvitupernet/marida_training.json"
 #training_config="configs/training/training_per_dataset/rvitupernet/woody_training.json"
-training_config="configs/training/training_per_dataset/rvitupernet/flair_training.json"
+#training_config="configs/training/training_per_dataset/rvitupernet/flair_training.json"
 #training_config="configs/training/training_per_dataset/rvitupernet/flair_training_optimized.json"
 #training_config="configs/training/training_per_dataset/rvit/bigearthnet_linear_eval_from_flair_training.json"
 #training_config="configs/training/training_per_dataset/rvit/mlrsnet_from_bigearthnet_training.json"
@@ -109,7 +110,7 @@ seed=222
 
 # Toggle inference masking: true = apply mask at test (e.g. for efficiency); false = use all tokens at test (best IoU).
 # With random_topx% + retain_percent 100, use false to compare; use true only if you want masked inference.
-APPLY_MASK_IN_INFER="false"
+APPLY_MASK_IN_INFER="true"
 
 # Handle GPU configuration
 if [ -n "$GPU_NUM" ]; then
