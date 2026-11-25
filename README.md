@@ -26,7 +26,7 @@ This repository contains code for the paper: Hide and Seek: Investigating Redund
 
 ```
 python3.10 -m venv redInv
-source .venv310/bin/activate
+source redInv/bin/activate
 
 pip install -r requirements_opt.txt, requirements_extra.txt
 ```
