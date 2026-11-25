@@ -12,7 +12,6 @@ This repository contains code for the paper: Hide and Seek: Investigating Redund
     - [Train one setting](#train-one-setting)
     - [Config files used for the main experiments](#config-files-used-for-the-main-experiments)
     - [Evaluate a saved checkpoint](#evaluate-a-saved-checkpoint)
-- [Plotting data](#plotting-data)
 - [Supported Models](#supported-models)
 - [Supported datasets](#supported-datasets)
 - [Extending the code](#extending-the-code)
@@ -26,9 +25,10 @@ This repository contains code for the paper: Hide and Seek: Investigating Redund
 ### Setup project
 
 ```
-conda env create --name envname --python=3.10
+python3.10 -m venv redInv
+source .venv310/bin/activate
 
-pip install -r requirements_opt.txt, requirements_extra.txt (requirements.txt as a back-up option)
+pip install -r requirements_opt.txt, requirements_extra.txt
 ```
 
 ### Repository Structure
@@ -256,13 +256,6 @@ In the main config set:
 Then call `main.py` with the **same** method and training configs used to train that checkpoint, including `--retain_percent`, `--implementation`, `--backbone`, and `--apply_mask_in_infer`. The checkpoint path in the committed configs is local and will not exist on another machine.
 
 `apply_mask_in_infer` controls whether tokens are dropped at test time. `false` runs the full token sequence at test (the accuracy comparison). `true` applies the same retention rule at test (the efficiency measurement). `run_gpu.sh` sets this with `APPLY_MASK_IN_INFER`.
-
-
-
-### Plotting data
-Each dataset implements a plot() function to handle the visualization of the examples. For example, executing `dataset.plot(index=0)` for the BigEarthNet dataset returns 
-
-![BigEarthNet example](examples/BigEarthNet_sample0.png)
 
 
 ### Supported models
