@@ -1,1 +1,7 @@
-torch_cluster
+# PyG precompiled wheel index for PyTorch 2.9.1 and CUDA 12.8
+--find-links https://data.pyg.org/whl/torch-2.9.1+cu128.html
+
+torch-scatter
+torch-sparse
+torch-cluster
+torch-spline-conv
